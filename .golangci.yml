@@ -1,0 +1,165 @@
+version: "2"
+
+run:
+  timeout: 5m
+  go: '1.23'
+  modules-download-mode: readonly
+  allow-parallel-runners: true
+
+linters:
+  enable:
+    # Core linters (always recommended)
+    - errcheck          # Check for unchecked errors
+    - gosimple          # Simplify code
+    - govet             # Go vet tool
+    - ineffassign       # Detect ineffectual assignments
+    - staticcheck       # Advanced static analysis
+    - unused            # Find unused code
+    - typecheck         # Type checking
+
+    # Code style and formatting
+    - whitespace        # Detect leading/trailing whitespace
+
+    # Error handling
+    - errorlint         # Error wrapping
+    - errname           # Error naming conventions
+    
+    # Security
+    - gosec             # Security issues
+    - bodyclose         # HTTP response body closing
+    
+    # Performance
+    - prealloc          # Slice preallocation
+    - unconvert         # Remove unnecessary conversions
+    
+    # Bugs and correctness
+    - gocritic          # Comprehensive Go linter
+    - contextcheck      # Context usage
+    - forcetypeassert   # Force type assertions to be checked
+    - errchkjson        # Check JSON marshaling errors
+    - noctx             # HTTP request without context
+    
+    # Code quality
+    - dupl              # Code duplication
+    - funlen            # Function length
+    - cyclop            # Cyclomatic complexity
+    - nestif            # Nested if statements
+    
+    # Best practices
+    - usestdlibvars     # Use standard library variables
+    - predeclared       # Avoid predeclared identifiers
+    - forbidigo         # Forbid specific identifiers
+    - revive            # Fast, configurable, extensible linter
+    - misspell          # Spell checker
+    - asciicheck        # ASCII character checker
+    - bidichk           # Unicode bidirectional text checker
+    
+    # Testing
+    - testpackage       # Separate test packages
+    
+    # Concurrency
+    - goconst           # Repeated strings to constants
+    
+    # Specific checkers
+    - asasalint         # Pass []any as any in Append
+    - dogsled           # Blank identifiers in assignments
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+      exclude-functions:
+        - io/ioutil.ReadFile
+        - io.Copy(*bytes.Buffer)
+        - io.Copy(os.Stdout)
+
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment  # Too strict for most projects
+        - shadow         # Can be noisy
+
+    staticcheck:
+      checks: ["all"]
+
+    gosec:
+      severity: medium
+      confidence: medium
+      excludes:
+        - G204  # Audit use of command execution - often false positive
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+        - experimental
+      disabled-checks:
+        - paramTypeCombine  # Can be noisy
+        - unnamedResult    # Sometimes unnamed results are clearer
+
+    revive:
+      rules:
+        - name: exported
+          arguments: [checkPrivateReceivers, sayRepetitiveInsteadOfStutters]
+        - name: package-comments
+        - name: var-naming
+        - name: unexported-return
+        - name: error-return
+        - name: error-naming
+        - name: if-return
+        - name: increment-decrement
+        - name: range-val-in-closure
+
+    funlen:
+      lines: 100
+      statements: 50
+      ignore-comments: true
+
+    cyclop:
+      max-complexity: 15
+      package-average: 10.0
+
+    nestif:
+      min-complexity: 5
+
+    dupl:
+      threshold: 100
+
+    misspell:
+      locale: US
+
+    forbidigo:
+      forbid:
+        - pattern: ^print.*$  # Forbid print statements except in specific contexts
+          msg: Do not commit print statements
+        - pattern: 'fmt\.Print.*'  # Forbid fmt.Print* outside of main packages
+          msg: Do not commit fmt.Print statements
+      exclude-godoc-examples: true
+
+    testpackage:
+      skip-regexp: '.*_internal_test\.go'
+
+    goconst:
+      min-len: 3
+      min-occurrences: 3
+
+  exclusions:
+    rules:
+      # Exclude some linters from running on tests files
+      - path: _test\.go
+        linters:
+          - gosec
+          - dupl
+          - funlen
+          - goconst
+      
+      # Exclude some staticcheck messages
+      - linters:
+          - staticcheck
+        text: "SA9003:"  # Empty branch
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
