@@ -53,10 +53,6 @@ temp/
 .env.local
 .env.*.local
 
-# Build artifacts
-eks-pod-identity-webhook
-webhook
-
 # Docker
 .dockerignore
 
