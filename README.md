@@ -93,7 +93,7 @@ Create an IAM role with a trust policy that allows your Kubernetes ServiceAccoun
 Add the Helm repository and install the chart:
 
 ```bash
-helm repo add mondu-ai https://mondu-ai.github.io/eks-pod-identity-webhook
+helm repo add mondu-ai https://mondu-ai.github.io/helm-charts-community
 helm repo update
 helm install eks-pod-identity-webhook mondu-ai/eks-pod-identity-webhook \
   --namespace aws-pod-identity-webhook
