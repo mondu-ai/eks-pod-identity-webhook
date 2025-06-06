@@ -1,3 +1,7 @@
+// Package main implements an EKS Pod Identity Webhook that mutates Kubernetes pod
+// specifications to inject AWS IAM credentials for pod-level access to AWS services.
+// The webhook automatically adds the necessary environment variables, volumes, and
+// volume mounts to enable AWS SDK authentication using IAM roles for service accounts (IRSA).
 package main
 
 import (
@@ -25,6 +29,7 @@ import (
 )
 
 var (
+	// Version holds the current version of the webhook, set at build time
 	Version = "dev"
 	scheme  = runtime.NewScheme()
 	codecs  = serializer.NewCodecFactory(scheme)
@@ -70,6 +75,7 @@ const (
 	readHeaderTimeout          = 15 * time.Second
 )
 
+// JSONPatchEntry represents a single JSON patch operation for modifying Kubernetes resources
 type JSONPatchEntry struct {
 	Op    string `json:"op"`
 	Path  string `json:"path"`
@@ -77,8 +83,12 @@ type JSONPatchEntry struct {
 }
 
 func init() {
-	_ = corev1.AddToScheme(scheme)
-	_ = admissionv1.AddToScheme(scheme)
+	if err := corev1.AddToScheme(scheme); err != nil {
+		panic(fmt.Sprintf("Failed to add corev1 to scheme: %v", err))
+	}
+	if err := admissionv1.AddToScheme(scheme); err != nil {
+		panic(fmt.Sprintf("Failed to add admissionv1 to scheme: %v", err))
+	}
 
 	// Initialize loggers with appropriate prefixes and flags
 	logFlags := log.Ldate | log.Ltime | log.Lmicroseconds | log.Lshortfile
@@ -298,7 +308,11 @@ func (whs *WebhookServer) handleMutatePod(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "could not read request body"})
 		return
 	}
-	defer c.Request.Body.Close()
+	defer func() {
+		if closeErr := c.Request.Body.Close(); closeErr != nil {
+			logWarnf("Failed to close request body: %v", closeErr)
+		}
+	}()
 
 	admissionReview, err := whs.parseAdmissionReview(body)
 	if err != nil {
@@ -439,8 +453,8 @@ func (whs *WebhookServer) createVolumePatches(pod *corev1.Pod) []JSONPatchEntry 
 
 	// Check if volume already exists
 	volumeExists := false
-	for _, v := range pod.Spec.Volumes {
-		if v.Name == awsTokenVolumeName {
+	for i := range pod.Spec.Volumes {
+		if pod.Spec.Volumes[i].Name == awsTokenVolumeName {
 			volumeExists = true
 			break
 		}
@@ -496,7 +510,8 @@ func (whs *WebhookServer) createContainerPatches(pod *corev1.Pod, roleArn string
 func (whs *WebhookServer) addMutationsToContainers(containers []corev1.Container, containerType string, basePath string, roleArn string, pod *corev1.Pod) []JSONPatchEntry {
 	var containerPatches []JSONPatchEntry
 
-	for i, container := range containers {
+	for i := range containers {
+		container := &containers[i]
 		currentContainerPath := fmt.Sprintf("%s/%d", basePath, i)
 
 		// Add volume mount patches
@@ -513,7 +528,7 @@ func (whs *WebhookServer) addMutationsToContainers(containers []corev1.Container
 	return containerPatches
 }
 
-func (whs *WebhookServer) createVolumeMountPatches(container corev1.Container, containerPath string, containerType string, pod *corev1.Pod) []JSONPatchEntry {
+func (whs *WebhookServer) createVolumeMountPatches(container *corev1.Container, containerPath string, containerType string, pod *corev1.Pod) []JSONPatchEntry {
 	var patches []JSONPatchEntry
 
 	// Check if volume mount already exists
@@ -548,7 +563,7 @@ func (whs *WebhookServer) createVolumeMountPatches(container corev1.Container, c
 	return patches
 }
 
-func (whs *WebhookServer) createEnvironmentPatches(container corev1.Container, containerPath string, containerType string, roleArn string, pod *corev1.Pod) []JSONPatchEntry {
+func (whs *WebhookServer) createEnvironmentPatches(container *corev1.Container, containerPath string, containerType string, roleArn string, pod *corev1.Pod) []JSONPatchEntry {
 	var patches []JSONPatchEntry
 
 	envVarsToAdd := []corev1.EnvVar{

@@ -39,9 +39,9 @@ test-coverage: ## Run tests with coverage
 # Lint the code
 lint: ## Run linter
 	@echo "Running linter..."
-	@command -v golangci-lint >/dev/null 2>&1 || { \
-		echo "Installing golangci-lint..."; \
-		go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest; \
+	@which golangci-lint >/dev/null 2>&1 || { \
+		echo "Installing golangci-lint v2.1.6..."; \
+		go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6; \
 	}
 	golangci-lint run ./...
 
@@ -49,7 +49,10 @@ lint: ## Run linter
 fmt: ## Format Go code
 	@echo "Formatting code..."
 	go fmt ./...
-	@command -v goimports >/dev/null 2>&1 || go install golang.org/x/tools/cmd/goimports@latest
+	@command -v goimports >/dev/null 2>&1 || { \
+		echo "Installing goimports..."; \
+		go install golang.org/x/tools/cmd/goimports@latest; \
+	}
 	goimports -w .
 
 # Vet the code
@@ -62,14 +65,14 @@ security: ## Run security scan with gosec
 	@echo "Running security scan..."
 	@command -v gosec >/dev/null 2>&1 || { \
 		echo "Installing gosec..."; \
-		go install github.com/securecode/gosec/v2/cmd/gosec@latest; \
+		go install github.com/securego/gosec/v2/cmd/gosec@latest; \
 	}
-	gosec -quiet ./...
+	gosec -fmt sarif -out results.sarif ./...
 
 # Clean build artifacts
 clean: ## Clean build artifacts
 	@echo "Cleaning..."
-	rm -f $(COVERAGE_FILE) coverage.html
+	rm -f $(COVERAGE_FILE) coverage.html results.sarif
 
 # Check for updates
 check-updates: ## Check for dependency updates

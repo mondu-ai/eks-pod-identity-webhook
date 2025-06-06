@@ -14,6 +14,8 @@ dist/
 *.out
 coverage.html
 coverage.xml
+results.sarif
+
 
 # Dependency directories
 vendor/
@@ -79,4 +81,3 @@ local/
 # Backup files
 *.bak
 *.backup
-

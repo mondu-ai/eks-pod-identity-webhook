@@ -42,21 +42,21 @@ func TestWebhookTestSuite(t *testing.T) {
 	suite.Run(t, new(WebhookTestSuite))
 }
 
-func (suite *WebhookTestSuite) SetupTest() {
+func (s *WebhookTestSuite) SetupTest() {
 	// Set gin to test mode to avoid debug output
 	gin.SetMode(gin.TestMode)
 
-	suite.clientset = fake.NewSimpleClientset()
-	suite.server = &WebhookServer{
-		Client: suite.clientset,
+	s.clientset = fake.NewSimpleClientset()
+	s.server = &WebhookServer{
+		Client: s.clientset,
 		Config: Config{
 			AWSRegion: "us-west-2",
 		},
 	}
 
-	suite.router = gin.New()
-	suite.router.POST("/mutate", suite.server.handleMutatePod)
-	suite.router.GET("/healthz", suite.server.handleHealthz)
+	s.router = gin.New()
+	s.router.POST("/mutate", s.server.handleMutatePod)
+	s.router.GET("/healthz", s.server.handleHealthz)
 }
 
 func TestConfigDefaults(t *testing.T) {
@@ -147,22 +147,22 @@ func TestLoggingFunctions(t *testing.T) {
 	}
 }
 
-func (suite *WebhookTestSuite) TestHandleHealthz() {
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "/healthz", nil)
-	require.NoError(suite.T(), err)
+func (s *WebhookTestSuite) TestHandleHealthz() {
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "/healthz", http.NoBody)
+	require.NoError(s.T(), err)
 
 	recorder := httptest.NewRecorder()
-	suite.router.ServeHTTP(recorder, req)
+	s.router.ServeHTTP(recorder, req)
 
-	assert.Equal(suite.T(), http.StatusOK, recorder.Code)
+	assert.Equal(s.T(), http.StatusOK, recorder.Code)
 
 	var response map[string]string
 	err = json.Unmarshal(recorder.Body.Bytes(), &response)
-	require.NoError(suite.T(), err)
-	assert.Equal(suite.T(), "ok", response["status"])
+	require.NoError(s.T(), err)
+	assert.Equal(s.T(), "ok", response["status"])
 }
 
-func (suite *WebhookTestSuite) TestHandleMutatePod() {
+func (s *WebhookTestSuite) TestHandleMutatePod() {
 	tests := []struct {
 		name                 string
 		requestBody          any
@@ -193,10 +193,10 @@ func (suite *WebhookTestSuite) TestHandleMutatePod() {
 						},
 					},
 				}
-				_, err := suite.clientset.CoreV1().ServiceAccounts("test-namespace").Create(
+				_, err := s.clientset.CoreV1().ServiceAccounts("test-namespace").Create(
 					context.Background(), sa, metav1.CreateOptions{},
 				)
-				require.NoError(suite.T(), err)
+				require.NoError(s.T(), err)
 			},
 			expectedStatusCode: http.StatusOK,
 			expectedAllowed:    true,
@@ -224,10 +224,10 @@ func (suite *WebhookTestSuite) TestHandleMutatePod() {
 						Namespace: "test-namespace",
 					},
 				}
-				_, err := suite.clientset.CoreV1().ServiceAccounts("test-namespace").Create(
+				_, err := s.clientset.CoreV1().ServiceAccounts("test-namespace").Create(
 					context.Background(), sa, metav1.CreateOptions{},
 				)
-				require.NoError(suite.T(), err)
+				require.NoError(s.T(), err)
 			},
 			expectedStatusCode: http.StatusOK,
 			expectedAllowed:    true,
@@ -261,10 +261,10 @@ func (suite *WebhookTestSuite) TestHandleMutatePod() {
 	}
 
 	for _, tt := range tests {
-		suite.T().Run(tt.name, func(t *testing.T) {
+		s.T().Run(tt.name, func(t *testing.T) {
 			// Reset clientset for each test
-			suite.clientset = fake.NewSimpleClientset()
-			suite.server.Client = suite.clientset
+			s.clientset = fake.NewSimpleClientset()
+			s.server.Client = s.clientset
 
 			tt.setupMocks()
 
@@ -283,7 +283,7 @@ func (suite *WebhookTestSuite) TestHandleMutatePod() {
 			req.Header.Set("Content-Type", "application/json")
 
 			recorder := httptest.NewRecorder()
-			suite.router.ServeHTTP(recorder, req)
+			s.router.ServeHTTP(recorder, req)
 
 			assert.Equal(t, tt.expectedStatusCode, recorder.Code)
 
@@ -580,9 +580,15 @@ func TestEnvironmentVariableLogLevel(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			originalLogLevel := os.Getenv("LOG_LEVEL")
-			defer os.Setenv("LOG_LEVEL", originalLogLevel)
+			defer func() {
+				if err := os.Setenv("LOG_LEVEL", originalLogLevel); err != nil {
+					t.Logf("Failed to restore LOG_LEVEL: %v", err)
+				}
+			}()
 
-			os.Setenv("LOG_LEVEL", tt.logLevel)
+			if err := os.Setenv("LOG_LEVEL", tt.logLevel); err != nil {
+				t.Fatalf("Failed to set LOG_LEVEL: %v", err)
+			}
 
 			// Simulate init() behavior
 			logLevel := os.Getenv("LOG_LEVEL")
@@ -742,7 +748,10 @@ func BenchmarkHandleMutatePod(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "/mutate", bytes.NewBuffer(reqBody))
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "/mutate", bytes.NewBuffer(reqBody))
+		if err != nil {
+			b.Fatal(err)
+		}
 		req.Header.Set("Content-Type", "application/json")
 
 		recorder := httptest.NewRecorder()
