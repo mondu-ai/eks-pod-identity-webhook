@@ -96,7 +96,7 @@ Add the Helm repository and install the chart:
 helm repo add mondu-ai https://mondu-ai.github.io/eks-pod-identity-webhook
 helm repo update
 helm install eks-pod-identity-webhook mondu-ai/eks-pod-identity-webhook \
-  --namespace aws-pod-identity-webhook --create-namespace
+  --namespace aws-pod-identity-webhook
 ```
 
 ### Configuration
@@ -105,7 +105,7 @@ You can customize the installation by providing values:
 
 ```bash
 helm install eks-pod-identity-webhook mondu-ai/eks-pod-identity-webhook \
-  --namespace aws-pod-identity-webhook --create-namespace \
+  --namespace aws-pod-identity-webhook \
   --set env.AWS_REGION=us-west-2
 ```
 

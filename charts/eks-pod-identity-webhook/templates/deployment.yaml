@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ include "eks-pod-identity-webhook.fullname" . }}-deployment
-  namespace: {{ .Values.namespace.name }}
+  namespace: {{ .Release.Namespace }}
   labels:
     app.kubernetes.io/name: {{ include "eks-pod-identity-webhook.name" . }}
     app.kubernetes.io/instance: {{ include "eks-pod-identity-webhook.fullname" . }}

@@ -9,9 +9,6 @@ serviceAccount:
   create: true
   name: aws-pod-identity-webhook-sa
 
-namespace:
-  create: true
-  name: ""  # Uses Release.Namespace when empty
 
 certManager:
   enabled: true

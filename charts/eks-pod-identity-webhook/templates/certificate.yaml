@@ -3,17 +3,17 @@ apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: {{ include "eks-pod-identity-webhook.fullname" . }}-tls
-  namespace: {{ .Values.namespace.name }}
+  namespace: {{ .Release.Namespace }}
   labels:
     app.kubernetes.io/name: {{ include "eks-pod-identity-webhook.name" . }}
 spec:
   secretName: {{ .Values.certManager.secretName }}
   duration: {{ .Values.certManager.certificate.duration }}
   renewBefore: {{ .Values.certManager.certificate.renewBefore }}
-  commonName: {{ include "eks-pod-identity-webhook.fullname" . }}-svc.{{ .Values.namespace.name }}.svc
+  commonName: {{ include "eks-pod-identity-webhook.fullname" . }}-svc.{{ .Release.Namespace }}.svc
   dnsNames:
-    - {{ include "eks-pod-identity-webhook.fullname" . }}-svc.{{ .Values.namespace.name }}.svc.cluster.local
-    - {{ include "eks-pod-identity-webhook.fullname" . }}-svc.{{ .Values.namespace.name }}.svc
+    - {{ include "eks-pod-identity-webhook.fullname" . }}-svc.{{ .Release.Namespace }}.svc.cluster.local
+    - {{ include "eks-pod-identity-webhook.fullname" . }}-svc.{{ .Release.Namespace }}.svc
   issuerRef:
     name: {{ .Values.certManager.issuerName }}
     kind: Issuer
