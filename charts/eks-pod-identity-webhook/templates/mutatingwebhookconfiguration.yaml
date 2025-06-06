@@ -19,6 +19,11 @@ webhooks:
         name: {{ include "eks-pod-identity-webhook.fullname" . }}-svc
         path: "/mutate"
         port: 443
+    objectSelector:
+      matchExpressions:
+        - key: app.kubernetes.io/name
+          operator: NotIn
+          values: ["{{ include "eks-pod-identity-webhook.name" . }}"]
     rules:
       - operations: ["CREATE", "UPDATE"]
         apiGroups: [""]
