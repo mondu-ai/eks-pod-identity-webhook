@@ -1,7 +1,7 @@
 repositoryID: eks-pod-identity-webhook
 owners:
   - name: mondu-ai
-    email: engineering@mondu.ai
+    email: it@mondu.ai
 repositoryURL: https://mondu-ai.github.io/eks-pod-identity-webhook
 displayName: EKS Pod Identity Webhook
 description: |
