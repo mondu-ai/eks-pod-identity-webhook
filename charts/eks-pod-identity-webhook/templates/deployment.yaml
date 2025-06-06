@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "eks-pod-identity-webhook.fullname" . }}-deployment
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: {{ include "eks-pod-identity-webhook.name" . }}
+    app.kubernetes.io/instance: {{ include "eks-pod-identity-webhook.fullname" . }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "eks-pod-identity-webhook.name" . }}
+      app.kubernetes.io/instance: {{ include "eks-pod-identity-webhook.fullname" . }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "eks-pod-identity-webhook.name" . }}
+        app.kubernetes.io/instance: {{ include "eks-pod-identity-webhook.fullname" . }}
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      automountServiceAccountToken: true
+      nodeSelector:
+{{ toYaml .Values.nodeSelector | indent 8 }}
+      containers:
+        - name: webhook
+          image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - "--tls-cert-path=/etc/webhook/certs/tls.crt"
+            - "--tls-key-path=/etc/webhook/certs/tls.key"
+            - "--listen-addr=:8443"
+            - "--aws-region={{ .Values.env.AWS_REGION }}"
+          ports:
+            - name: webhook-https
+              containerPort: 8443
+              protocol: TCP
+          env:
+            - name: GIN_MODE
+              value: {{ .Values.env.GIN_MODE }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - "ALL"
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: webhook-tls-certs
+              mountPath: /etc/webhook/certs
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: webhook-https
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: webhook-https
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+{{ toYaml .Values.resources | indent 12 }}
+      volumes:
+        - name: webhook-tls-certs
+          secret:
+            secretName: {{ default .Values.certManager.secretName .Values.existingTLSSecret }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      affinity:
+{{ toYaml .Values.affinity | indent 8 }}

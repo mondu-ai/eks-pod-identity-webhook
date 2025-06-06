@@ -88,6 +88,41 @@ Create an IAM role with a trust policy that allows your Kubernetes ServiceAccoun
 }
 ```
 
+## 🚀 Installation
+
+Add the Helm repository and install the chart:
+
+```bash
+helm repo add mondu-ai https://mondu-ai.github.io/eks-pod-identity-webhook
+helm repo update
+helm install eks-pod-identity-webhook mondu-ai/eks-pod-identity-webhook \
+  --namespace aws-pod-identity-webhook --create-namespace
+```
+
+### Configuration
+
+You can customize the installation by providing values:
+
+```bash
+helm install eks-pod-identity-webhook mondu-ai/eks-pod-identity-webhook \
+  --namespace aws-pod-identity-webhook --create-namespace \
+  --set env.AWS_REGION=us-west-2 \
+  --set replicaCount=3 \
+  --set image.tag=v1.0.0
+```
+
+### Custom TLS certificates
+
+By default the chart relies on cert-manager to generate a self-signed certificate. To use your own TLS secret, disable cert-manager resources and provide the secret name:
+
+```yaml
+certManager:
+  enabled: false
+existingTLSSecret: my-webhook-tls
+```
+
+Set `image.repository` and `image.tag` if you need to override the container image (default `ghcr.io/mondu-ai/eks-pod-identity-webhook:latest`).
+
 ## 🏛️ Architecture
 
 ```mermaid

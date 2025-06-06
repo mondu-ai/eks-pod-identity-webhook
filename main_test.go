@@ -66,7 +66,7 @@ func TestConfigDefaults(t *testing.T) {
 		actual   any
 	}{
 		{"Default listen address", defaultListenAddr, ":8443"},
-		{"Default AWS region", defaultAWSRegion, "eu-central-1"},
+		{"Default AWS region", defaultAWSRegion, "us-east-1"},
 		{"Default TLS cert path", defaultTLSCertPath, "/etc/webhook/certs/tls.crt"},
 		{"Default TLS key path", defaultTLSKeyPath, "/etc/webhook/certs/tls.key"},
 		{"AWS role ARN annotation key", awsRoleArnAnnotationKey, "eks.amazonaws.com/role-arn"},

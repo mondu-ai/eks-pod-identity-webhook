@@ -1,0 +1,28 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: {{ include "eks-pod-identity-webhook.fullname" . }}-cfg
+  labels:
+    app.kubernetes.io/name: {{ include "eks-pod-identity-webhook.name" . }}
+  annotations:
+    {{- if not .Values.existingTLSSecret }}
+    cert-manager.io/inject-ca-from: {{ .Values.namespace.name }}/{{ include "eks-pod-identity-webhook.fullname" . }}-tls
+    {{- end }}
+webhooks:
+  - name: aws-pod-identity-webhook.mondu.internal
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Fail
+    clientConfig:
+      service:
+        namespace: {{ .Values.namespace.name }}
+        name: {{ include "eks-pod-identity-webhook.fullname" . }}-svc
+        path: "/mutate"
+        port: 443
+    rules:
+      - operations: ["CREATE", "UPDATE"]
+        apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods"]
+        scope: "*"
+

@@ -54,7 +54,10 @@ temp/
 .env.*.local
 
 # Build artifacts
+# Ignore build artifacts but keep helm chart directory
 eks-pod-identity-webhook
+!charts/eks-pod-identity-webhook/
+!charts/eks-pod-identity-webhook/**
 webhook
 
 # Docker
