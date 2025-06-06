@@ -52,9 +52,5 @@ USER 65534:65534
 # Expose webhook port
 EXPOSE 8443
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD ["/usr/local/bin/eks-pod-identity-webhook", "healthz"] || exit 1
-
 # Set entrypoint
 ENTRYPOINT ["/usr/local/bin/eks-pod-identity-webhook"]
