@@ -58,7 +58,7 @@ type WebhookServer struct {
 
 const (
 	defaultListenAddr          = ":8443"
-	defaultAWSRegion           = "eu-central-1"
+	defaultAWSRegion           = "us-east-1"
 	defaultTLSCertPath         = "/etc/webhook/certs/tls.crt"
 	defaultTLSKeyPath          = "/etc/webhook/certs/tls.key"
 	awsRoleArnAnnotationKey    = "eks.amazonaws.com/role-arn"

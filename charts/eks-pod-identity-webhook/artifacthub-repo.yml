@@ -1,0 +1,10 @@
+repositoryID: eks-pod-identity-webhook
+owners:
+  - name: mondu-ai
+    email: engineering@mondu.ai
+repositoryURL: https://mondu-ai.github.io/eks-pod-identity-webhook
+displayName: EKS Pod Identity Webhook
+description: |
+  Kubernetes mutating admission webhook that enables pods running in non-EKS clusters 
+  (such as GKE, AKS, or on-premises) to seamlessly assume AWS IAM roles using the same 
+  patterns as EKS IAM Roles for Service Accounts (IRSA). 
