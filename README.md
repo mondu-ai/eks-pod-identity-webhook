@@ -2,8 +2,7 @@
 
 [![Go Version](https://img.shields.io/github/go-mod/go-version/mondu-ai/eks-pod-identity-webhook)](https://golang.org/)
 [![License](https://img.shields.io/github/license/mondu-ai/eks-pod-identity-webhook)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/mondu-ai/eks-pod-identity-webhook)](https://github.com/mondu-ai/eks-pod-identity-webhook/releases)
-[![Docker Pulls](https://img.shields.io/docker/pulls/mondu-ai/eks-pod-identity-webhook)](https://hub.docker.com/r/mondu-ai/eks-pod-identity-webhook)
+[![Container](https://img.shields.io/badge/container-ghcr.io-blue)](https://github.com/mondu-ai/eks-pod-identity-webhook/pkgs/container/eks-pod-identity-webhook)
 [![Go Report Card](https://goreportcard.com/badge/github.com/mondu-ai/eks-pod-identity-webhook)](https://goreportcard.com/report/github.com/mondu-ai/eks-pod-identity-webhook)
 
 A Kubernetes mutating admission webhook that enables pods running in non-EKS clusters (such as GKE, AKS, or on-premises) to seamlessly assume AWS IAM roles using the same patterns as EKS IAM Roles for Service Accounts (IRSA).

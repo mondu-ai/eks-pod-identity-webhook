@@ -79,5 +79,12 @@ check-updates: ## Check for dependency updates
 	@echo "Checking for dependency updates..."
 	go list -u -m all
 
+# Update dependencies
+update-deps: ## Update all dependencies to latest versions
+	@echo "Updating dependencies..."
+	go get -u ./...
+	go mod tidy
+	@echo "Dependencies updated!"
+
 # Full CI pipeline
 ci: deps fmt vet lint security test ## Run full CI pipeline
