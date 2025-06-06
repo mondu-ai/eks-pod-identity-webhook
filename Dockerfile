@@ -2,11 +2,11 @@
 FROM golang:1.24-alpine AS builder
 
 # Set up build environment
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
-ARG VERSION=dev
-ARG COMMIT=unknown
-ARG BUILD_DATE=unknown
+ARG TARGETOS
+ARG TARGETARCH
+ARG VERSION
+ARG COMMIT
+ARG BUILD_DATE
 
 # Install build dependencies
 RUN apk add --no-cache git ca-certificates tzdata
