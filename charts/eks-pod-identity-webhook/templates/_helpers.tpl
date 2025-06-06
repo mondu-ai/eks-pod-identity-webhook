@@ -11,9 +11,5 @@
 {{- end -}}
 
 {{- define "eks-pod-identity-webhook.namespace" -}}
-{{- if .Values.namespace.name -}}
-{{- .Values.namespace.name -}}
-{{- else -}}
 {{- .Release.Namespace -}}
-{{- end -}}
 {{- end -}}

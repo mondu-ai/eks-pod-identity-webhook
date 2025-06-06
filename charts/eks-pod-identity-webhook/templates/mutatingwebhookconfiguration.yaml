@@ -6,7 +6,7 @@ metadata:
     app.kubernetes.io/name: {{ include "eks-pod-identity-webhook.name" . }}
   annotations:
     {{- if not .Values.existingTLSSecret }}
-    cert-manager.io/inject-ca-from: {{ .Values.namespace.name }}/{{ include "eks-pod-identity-webhook.fullname" . }}-tls
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "eks-pod-identity-webhook.fullname" . }}-tls
     {{- end }}
 webhooks:
   - name: aws-pod-identity-webhook.mondu.internal
@@ -15,7 +15,7 @@ webhooks:
     failurePolicy: Fail
     clientConfig:
       service:
-        namespace: {{ .Values.namespace.name }}
+        namespace: {{ .Release.Namespace }}
         name: {{ include "eks-pod-identity-webhook.fullname" . }}-svc
         path: "/mutate"
         port: 443

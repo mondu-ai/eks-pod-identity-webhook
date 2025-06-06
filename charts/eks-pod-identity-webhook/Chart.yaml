@@ -2,5 +2,5 @@ apiVersion: v2
 name: eks-pod-identity-webhook
 description: Helm chart for deploying the EKS Pod Identity Webhook
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.1.1
+appVersion: "0.1.1"
