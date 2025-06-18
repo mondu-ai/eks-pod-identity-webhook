@@ -599,6 +599,88 @@ func TestEnvironmentVariableLogLevel(t *testing.T) {
 	}
 }
 
+func TestGenerateRoleSessionName(t *testing.T) {
+	whs := &WebhookServer{}
+
+	tests := []struct {
+		name     string
+		pod      *corev1.Pod
+		expected string
+	}{
+		{
+			name: "Pod with name",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "my-pod",
+					Namespace: "default",
+				},
+				Spec: corev1.PodSpec{
+					ServiceAccountName: "my-sa",
+				},
+			},
+			expected: "my-pod",
+		},
+		{
+			name: "Pod without name but with GenerateName",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					GenerateName: "my-deployment-",
+					Namespace:    "default",
+				},
+				Spec: corev1.PodSpec{
+					ServiceAccountName: "my-sa",
+				},
+			},
+			expected: "", // We'll check that it starts with "my-deployment-" and has a timestamp
+		},
+		{
+			name: "Pod without name or GenerateName",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "my-namespace",
+				},
+				Spec: corev1.PodSpec{
+					ServiceAccountName: "my-sa",
+				},
+			},
+			expected: "my-namespace-my-sa",
+		},
+		{
+			name: "Pod without name, GenerateName, or ServiceAccount",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "my-namespace",
+				},
+			},
+			expected: "my-namespace-pod",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := whs.generateRoleSessionName(tt.pod)
+
+			if tt.name == "Pod without name but with GenerateName" {
+				// Special case: check that it starts with the expected prefix and has a timestamp
+				if !strings.HasPrefix(result, "my-deployment-") {
+					t.Errorf("Expected result to start with 'my-deployment-', got %s", result)
+				}
+				// Check that it has a timestamp (should be longer than just "my-deployment-")
+				if len(result) <= len("my-deployment-") {
+					t.Errorf("Expected result to have timestamp suffix, got %s", result)
+				}
+			} else if result != tt.expected {
+				t.Errorf("Expected %s, got %s", tt.expected, result)
+			}
+
+			// All results should be non-empty
+			if result == "" {
+				t.Errorf("generateRoleSessionName should never return empty string")
+			}
+		})
+	}
+}
+
 // Helper functions
 
 func createAdmissionReview(pod *corev1.Pod) admissionv1.AdmissionReview {
