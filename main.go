@@ -571,7 +571,7 @@ func (whs *WebhookServer) createEnvironmentPatches(container *corev1.Container, 
 		{Name: awsRoleArnEnv, Value: roleArn},
 		{Name: awsRegionEnv, Value: whs.Config.AWSRegion},
 		{Name: awsDefaultRegionEnv, Value: whs.Config.AWSRegion},
-		{Name: awsRoleSessionNameEnv, Value: pod.Name},
+		{Name: awsRoleSessionNameEnv, Value: whs.generateRoleSessionName(pod)},
 	}
 
 	envPath := containerPath + "/env"
@@ -599,4 +599,31 @@ func (whs *WebhookServer) createEnvironmentPatches(container *corev1.Container, 
 	}
 
 	return patches
+}
+
+// generateRoleSessionName creates a meaningful AWS role session name for the pod.
+// This handles cases where pod.Name might be empty (e.g., when created by controllers like Deployments).
+func (whs *WebhookServer) generateRoleSessionName(pod *corev1.Pod) string {
+	// If pod has a name, use it
+	if pod.Name != "" {
+		return pod.Name
+	}
+
+	// If pod doesn't have a name yet, try to use GenerateName
+	if pod.GenerateName != "" {
+		// Remove trailing dash if present and add a timestamp for uniqueness
+		sessionName := pod.GenerateName
+		if sessionName != "" && sessionName[len(sessionName)-1] == '-' {
+			sessionName = sessionName[:len(sessionName)-1]
+		}
+		return fmt.Sprintf("%s-%d", sessionName, time.Now().Unix())
+	}
+
+	// Fallback to namespace and service account
+	if pod.Spec.ServiceAccountName != "" {
+		return fmt.Sprintf("%s-%s", pod.Namespace, pod.Spec.ServiceAccountName)
+	}
+
+	// Final fallback
+	return fmt.Sprintf("%s-pod", pod.Namespace)
 }
