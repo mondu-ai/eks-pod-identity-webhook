@@ -6,7 +6,7 @@ toolchain go1.24.3
 
 require (
 	github.com/gin-gonic/gin v1.10.1
-	github.com/stretchr/testify v1.10.0
+	github.com/stretchr/testify v1.11.0
 	k8s.io/api v0.33.1
 	k8s.io/apimachinery v0.33.1
 	k8s.io/client-go v0.33.1
