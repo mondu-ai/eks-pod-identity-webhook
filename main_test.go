@@ -94,14 +94,14 @@ func TestLoggingFunctions(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		debugMode      bool
+		debugModeVal   bool
 		logFunc        func()
 		expectedOutput string
 		shouldContain  bool
 	}{
 		{
-			name:      "Debug logging when enabled",
-			debugMode: true,
+			name:         "Debug logging when enabled",
+			debugModeVal: true,
 			logFunc: func() {
 				debugLogger.SetOutput(&buf)
 				logDebug("test debug message")
@@ -110,8 +110,8 @@ func TestLoggingFunctions(t *testing.T) {
 			shouldContain:  true,
 		},
 		{
-			name:      "Debug logging when disabled",
-			debugMode: false,
+			name:         "Debug logging when disabled",
+			debugModeVal: false,
 			logFunc: func() {
 				debugLogger.SetOutput(&buf)
 				logDebug("test debug message")
@@ -120,8 +120,8 @@ func TestLoggingFunctions(t *testing.T) {
 			shouldContain:  false,
 		},
 		{
-			name:      "Info logging",
-			debugMode: false,
+			name:         "Info logging",
+			debugModeVal: false,
 			logFunc: func() {
 				infoLogger.SetOutput(&buf)
 				logInfo("test info message")
@@ -134,7 +134,7 @@ func TestLoggingFunctions(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			buf.Reset()
-			debugMode = tt.debugMode
+			debugMode = tt.debugModeVal
 			tt.logFunc()
 
 			output := buf.String()
@@ -679,6 +679,255 @@ func TestGenerateRoleSessionName(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGenerateRoleSessionNameTruncation(t *testing.T) {
+	whs := &WebhookServer{}
+
+	tests := []struct {
+		name           string
+		pod            *corev1.Pod
+		maxLen         int
+		checkPrefix    string
+		checkExactName string
+	}{
+		{
+			name: "Long pod name gets truncated",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "this-is-a-very-long-pod-name-that-exceeds-the-64-character-limit-for-aws-sts",
+					Namespace: "default",
+				},
+			},
+			maxLen:      64,
+			checkPrefix: "this-is-a-very-long-pod-name-that-exceeds-the-64-character-limi",
+		},
+		{
+			name: "Exactly 64 character pod name is not truncated",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "this-is-exactly-64-characters-long-pod-name-for-testing-purpose",
+					Namespace: "default",
+				},
+			},
+			maxLen:         64,
+			checkExactName: "this-is-exactly-64-characters-long-pod-name-for-testing-purpose",
+		},
+		{
+			name: "Short pod name is not truncated",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "short-pod",
+					Namespace: "default",
+				},
+			},
+			maxLen:         64,
+			checkExactName: "short-pod",
+		},
+		{
+			name: "Long GenerateName with timestamp gets truncated",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					GenerateName: "this-is-a-very-long-deployment-name-that-will-exceed-limit-",
+					Namespace:    "default",
+				},
+			},
+			maxLen:      64,
+			checkPrefix: "this-is-a-very-long-deployment-name-that-will-exceed-limit",
+		},
+		{
+			name: "Long namespace and service account gets truncated",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "this-is-a-very-long-namespace-name",
+				},
+				Spec: corev1.PodSpec{
+					ServiceAccountName: "this-is-a-very-long-service-account-name",
+				},
+			},
+			maxLen:      64,
+			checkPrefix: "this-is-a-very-long-namespace-name-this-is-a-very-long-service-",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := whs.generateRoleSessionName(tt.pod)
+
+			// Check max length compliance (AWS STS limit)
+			if len(result) > tt.maxLen {
+				t.Errorf("Result length %d exceeds max length %d: %s", len(result), tt.maxLen, result)
+			}
+
+			// Check exact name if specified
+			if tt.checkExactName != "" && result != tt.checkExactName {
+				t.Errorf("Expected exact name '%s', got '%s'", tt.checkExactName, result)
+			}
+
+			// Check prefix if specified
+			if tt.checkPrefix != "" && !strings.HasPrefix(result, tt.checkPrefix) {
+				t.Errorf("Expected result to start with '%s', got '%s'", tt.checkPrefix, result)
+			}
+
+			// Result should never be empty
+			if result == "" {
+				t.Errorf("generateRoleSessionName should never return empty string")
+			}
+		})
+	}
+}
+
+func TestGenerateRoleSessionNameUniqueness(t *testing.T) {
+	whs := &WebhookServer{}
+
+	// Test that multiple calls for pods with GenerateName produce unique names
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: "my-deployment-",
+			Namespace:    "default",
+		},
+		Spec: corev1.PodSpec{
+			ServiceAccountName: "my-sa",
+		},
+	}
+
+	seen := make(map[string]bool)
+	iterations := 100
+
+	for i := 0; i < iterations; i++ {
+		result := whs.generateRoleSessionName(pod)
+		if seen[result] {
+			t.Errorf("Duplicate session name generated: %s", result)
+		}
+		seen[result] = true
+
+		// Verify length constraint
+		if len(result) > 64 {
+			t.Errorf("Session name exceeds 64 chars: %s (len=%d)", result, len(result))
+		}
+	}
+}
+
+func TestSanitizeSessionName(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "Valid characters unchanged",
+			input:    "my-pod-name_123",
+			expected: "my-pod-name_123",
+		},
+		{
+			name:     "All valid special characters",
+			input:    "test+=,.@_-abc",
+			expected: "test+=,.@_-abc",
+		},
+		{
+			name:     "Spaces replaced with hyphens",
+			input:    "pod with spaces",
+			expected: "pod-with-spaces",
+		},
+		{
+			name:     "Special chars replaced with hyphens",
+			input:    "pod!@#$%name",
+			expected: "pod-@---name",
+		},
+		{
+			name:     "Unicode characters replaced",
+			input:    "pod-日本語-name",
+			expected: "pod-----------name", // Each multi-byte UTF-8 char becomes multiple hyphens
+		},
+		{
+			name:     "Colons replaced with hyphens",
+			input:    "pod:with:colons",
+			expected: "pod-with-colons",
+		},
+		{
+			name:     "Slashes replaced with hyphens",
+			input:    "pod/with/slashes",
+			expected: "pod-with-slashes",
+		},
+		{
+			name:     "Empty string returns empty",
+			input:    "",
+			expected: "",
+		},
+		{
+			name:     "Only valid uppercase letters",
+			input:    "PODNAME",
+			expected: "PODNAME",
+		},
+		{
+			name:     "Mixed case with numbers",
+			input:    "MyPod123ABC",
+			expected: "MyPod123ABC",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := sanitizeSessionName(tt.input)
+			if result != tt.expected {
+				t.Errorf("sanitizeSessionName(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestGenerateRoleSessionNameEmptyGenerateName(t *testing.T) {
+	whs := &WebhookServer{}
+
+	// Test edge case: GenerateName is empty string
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: "",
+			Namespace:    "default",
+		},
+		Spec: corev1.PodSpec{
+			ServiceAccountName: "test-sa",
+		},
+	}
+
+	// Should not panic and should fall through to ServiceAccountName case
+	result := whs.generateRoleSessionName(pod)
+	expected := "default-test-sa"
+	if result != expected {
+		t.Errorf("Expected %q, got %q", expected, result)
+	}
+}
+
+func TestGenerateRoleSessionNameSanitization(t *testing.T) {
+	whs := &WebhookServer{}
+
+	t.Run("Pod name with valid chars is unchanged", func(t *testing.T) {
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "my-valid-pod-name",
+				Namespace: "default",
+			},
+		}
+		result := whs.generateRoleSessionName(pod)
+		if result != "my-valid-pod-name" {
+			t.Errorf("Expected result to be %q, got %q", "my-valid-pod-name", result)
+		}
+	})
+
+	t.Run("ServiceAccount fallback is sanitized", func(t *testing.T) {
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: "my-namespace",
+			},
+			Spec: corev1.PodSpec{
+				ServiceAccountName: "my-service-account",
+			},
+		}
+		result := whs.generateRoleSessionName(pod)
+		if result != "my-namespace-my-service-account" {
+			t.Errorf("Expected result to be %q, got %q", "my-namespace-my-service-account", result)
+		}
+	})
 }
 
 // Helper functions

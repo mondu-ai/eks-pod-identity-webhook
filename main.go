@@ -28,6 +28,38 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
+const (
+	// Default configuration values
+	defaultListenAddr  = ":8443"
+	defaultAWSRegion   = "us-east-1"
+	defaultTLSCertPath = "/etc/webhook/certs/tls.crt"
+	defaultTLSKeyPath  = "/etc/webhook/certs/tls.key"
+
+	// AWS annotation and environment variable names
+	awsRoleArnAnnotationKey    = "eks.amazonaws.com/role-arn"
+	awsWebIdentityTokenFileEnv = "AWS_WEB_IDENTITY_TOKEN_FILE" // #nosec G101 - Standard env var name, not a secret
+	awsRoleArnEnv              = "AWS_ROLE_ARN"
+	awsRegionEnv               = "AWS_REGION"
+	awsDefaultRegionEnv        = "AWS_DEFAULT_REGION"
+	awsRoleSessionNameEnv      = "AWS_ROLE_SESSION_NAME"
+
+	// Projected token volume configuration
+	awsTokenVolumeName       = "aws-token"
+	awsTokenMountPath        = "/var/run/secrets/eks.amazonaws.com/serviceaccount" // #nosec G101 - Standard path, not a secret
+	awsTokenPath             = "token"
+	projectedTokenAudience   = "sts.amazonaws.com" // #nosec G101 - Standard audience, not a secret
+	projectedTokenExpiration = 3600
+
+	// HTTP server timeouts
+	readHeaderTimeout = 15 * time.Second
+	readTimeout       = 30 * time.Second
+	writeTimeout      = 30 * time.Second
+	idleTimeout       = 60 * time.Second
+
+	// maxRoleSessionNameLength is the AWS STS limit for role session names
+	maxRoleSessionNameLength = 64
+)
+
 var (
 	// Version holds the current version of the webhook, set at build time
 	Version = "dev"
@@ -55,25 +87,6 @@ type WebhookServer struct {
 	Client kubernetes.Interface
 	Config Config
 }
-
-const (
-	defaultListenAddr          = ":8443"
-	defaultAWSRegion           = "us-east-1"
-	defaultTLSCertPath         = "/etc/webhook/certs/tls.crt"
-	defaultTLSKeyPath          = "/etc/webhook/certs/tls.key"
-	awsRoleArnAnnotationKey    = "eks.amazonaws.com/role-arn"
-	awsTokenVolumeName         = "aws-token"
-	awsTokenMountPath          = "/var/run/secrets/eks.amazonaws.com/serviceaccount" // #nosec G101 - Standard path, not a secret
-	awsTokenPath               = "token"
-	awsWebIdentityTokenFileEnv = "AWS_WEB_IDENTITY_TOKEN_FILE" // #nosec G101 - Standard env var name, not a secret
-	awsRoleArnEnv              = "AWS_ROLE_ARN"
-	awsRegionEnv               = "AWS_REGION"
-	awsDefaultRegionEnv        = "AWS_DEFAULT_REGION"
-	awsRoleSessionNameEnv      = "AWS_ROLE_SESSION_NAME"
-	projectedTokenAudience     = "sts.amazonaws.com" // #nosec G101 - Standard audience, not a secret
-	projectedTokenExpiration   = 3600
-	readHeaderTimeout          = 15 * time.Second
-)
 
 // JSONPatchEntry represents a single JSON patch operation for modifying Kubernetes resources
 type JSONPatchEntry struct {
@@ -271,6 +284,9 @@ func createHTTPServer(listenAddr string, handler http.Handler) *http.Server {
 		Addr:              listenAddr,
 		Handler:           handler,
 		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
 	}
 }
 
@@ -603,27 +619,58 @@ func (whs *WebhookServer) createEnvironmentPatches(container *corev1.Container, 
 
 // generateRoleSessionName creates a meaningful AWS role session name for the pod.
 // This handles cases where pod.Name might be empty (e.g., when created by controllers like Deployments).
+// The returned name is truncated to 64 characters to comply with AWS STS limits.
+// Invalid characters are replaced with hyphens to comply with AWS STS character restrictions.
 func (whs *WebhookServer) generateRoleSessionName(pod *corev1.Pod) string {
-	// If pod has a name, use it
-	if pod.Name != "" {
-		return pod.Name
-	}
+	var sessionName string
 
-	// If pod doesn't have a name yet, try to use GenerateName
-	if pod.GenerateName != "" {
+	switch {
+	case pod.Name != "":
+		// If pod has a name, use it
+		sessionName = pod.Name
+	case pod.GenerateName != "":
+		// If pod doesn't have a name yet, try to use GenerateName
 		// Remove trailing dash if present and add a timestamp for uniqueness
-		sessionName := pod.GenerateName
-		if sessionName != "" && sessionName[len(sessionName)-1] == '-' {
-			sessionName = sessionName[:len(sessionName)-1]
+		baseName := pod.GenerateName
+		if baseName != "" && baseName[len(baseName)-1] == '-' {
+			baseName = baseName[:len(baseName)-1]
 		}
-		return fmt.Sprintf("%s-%d", sessionName, time.Now().Unix())
+		// Use UnixNano for uniqueness when multiple pods are created in the same second
+		sessionName = fmt.Sprintf("%s-%d", baseName, time.Now().UnixNano())
+	case pod.Spec.ServiceAccountName != "":
+		// Fallback to namespace and service account
+		sessionName = fmt.Sprintf("%s-%s", pod.Namespace, pod.Spec.ServiceAccountName)
+	default:
+		// Final fallback
+		sessionName = fmt.Sprintf("%s-pod", pod.Namespace)
 	}
 
-	// Fallback to namespace and service account
-	if pod.Spec.ServiceAccountName != "" {
-		return fmt.Sprintf("%s-%s", pod.Namespace, pod.Spec.ServiceAccountName)
+	// Sanitize to remove invalid AWS STS characters
+	sessionName = sanitizeSessionName(sessionName)
+
+	// Truncate to AWS STS limit
+	if len(sessionName) > maxRoleSessionNameLength {
+		sessionName = sessionName[:maxRoleSessionNameLength]
 	}
 
-	// Final fallback
-	return fmt.Sprintf("%s-pod", pod.Namespace)
+	return sessionName
+}
+
+// sanitizeSessionName replaces characters not allowed in AWS STS role session names.
+// AWS STS only allows: [A-Za-z0-9+=,.@_-]
+func sanitizeSessionName(name string) string {
+	result := make([]byte, len(name))
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		// Keep valid characters: A-Za-z0-9+=,.@_-
+		if (c >= 'A' && c <= 'Z') ||
+			(c >= 'a' && c <= 'z') ||
+			(c >= '0' && c <= '9') ||
+			c == '+' || c == '=' || c == ',' || c == '.' || c == '@' || c == '_' || c == '-' {
+			result[i] = c
+		} else {
+			result[i] = '-'
+		}
+	}
+	return string(result)
 }
