@@ -46,7 +46,7 @@ func (s *WebhookTestSuite) SetupTest() {
 	// Set gin to test mode to avoid debug output
 	gin.SetMode(gin.TestMode)
 
-	s.clientset = fake.NewSimpleClientset()
+	s.clientset = fake.NewClientset()
 	s.server = &WebhookServer{
 		Client: s.clientset,
 		Config: Config{
@@ -263,7 +263,7 @@ func (s *WebhookTestSuite) TestHandleMutatePod() {
 	for _, tt := range tests {
 		s.T().Run(tt.name, func(t *testing.T) {
 			// Reset clientset for each test
-			s.clientset = fake.NewSimpleClientset()
+			s.clientset = fake.NewClientset()
 			s.server.Client = s.clientset
 
 			tt.setupMocks()
@@ -430,7 +430,7 @@ func TestCreatePatch(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			clientset := fake.NewSimpleClientset()
+			clientset := fake.NewClientset()
 
 			if tt.serviceAccount != nil {
 				_, err := clientset.CoreV1().ServiceAccounts(tt.serviceAccount.Namespace).Create(
@@ -505,7 +505,7 @@ func TestCreatePatchErrorCases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			clientset := fake.NewSimpleClientset()
+			clientset := fake.NewClientset()
 			tt.setupMocks(clientset)
 
 			server := &WebhookServer{
@@ -1006,7 +1006,7 @@ func validatePatches(t *testing.T, patches []JSONPatchEntry, _ *corev1.Pod) {
 // Benchmark tests for performance validation
 
 func BenchmarkCreatePatch(b *testing.B) {
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 
 	sa := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1044,7 +1044,7 @@ func BenchmarkCreatePatch(b *testing.B) {
 func BenchmarkHandleMutatePod(b *testing.B) {
 	gin.SetMode(gin.TestMode)
 
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 	sa := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "benchmark-sa",
