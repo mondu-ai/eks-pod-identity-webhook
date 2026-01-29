@@ -40,10 +40,10 @@ test-coverage: ## Run tests with coverage
 lint: ## Run linter
 	@echo "Running linter..."
 	@which golangci-lint >/dev/null 2>&1 || { \
-		echo "Installing golangci-lint v2.1.6..."; \
-		go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6; \
+		echo "Installing golangci-lint v2..."; \
+		go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest; \
 	}
-	golangci-lint run --skip-dirs=e2e ./...
+	golangci-lint run ./...
 
 # Format the code
 fmt: ## Format Go code
