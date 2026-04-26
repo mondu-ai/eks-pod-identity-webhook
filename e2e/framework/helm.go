@@ -207,6 +207,47 @@ func (d *HelmDeployer) waitForDeploymentReady(ctx context.Context) error {
 	)
 }
 
+// UpdateTLSSecret updates the TLS secret with new certificate and key data.
+func UpdateTLSSecret(ctx context.Context, client kubernetes.Interface, namespace string, certs *WebhookCertificates) error {
+	secret, err := client.CoreV1().Secrets(namespace).Get(ctx, helmTLSSecretName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get TLS secret: %w", err)
+	}
+
+	secret.Data[corev1.TLSCertKey] = certs.ServerCert
+	secret.Data[corev1.TLSPrivateKeyKey] = certs.ServerKey
+
+	_, err = client.CoreV1().Secrets(namespace).Update(ctx, secret, metav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to update TLS secret: %w", err)
+	}
+
+	return nil
+}
+
+// UpdateWebhookCABundle updates the MutatingWebhookConfiguration with a new CA bundle.
+func UpdateWebhookCABundle(ctx context.Context, client kubernetes.Interface, caCert []byte) error {
+	webhookConfig, err := client.AdmissionregistrationV1().MutatingWebhookConfigurations().Get(
+		ctx, helmWebhookConfigName, metav1.GetOptions{},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to get webhook configuration: %w", err)
+	}
+
+	for i := range webhookConfig.Webhooks {
+		webhookConfig.Webhooks[i].ClientConfig.CABundle = caCert
+	}
+
+	_, err = client.AdmissionregistrationV1().MutatingWebhookConfigurations().Update(
+		ctx, webhookConfig, metav1.UpdateOptions{},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update webhook CA bundle: %w", err)
+	}
+
+	return nil
+}
+
 func (d *HelmDeployer) patchWebhookCABundle(ctx context.Context) error {
 	// Get the existing MutatingWebhookConfiguration
 	webhookConfig, err := d.client.AdmissionregistrationV1().MutatingWebhookConfigurations().Get(

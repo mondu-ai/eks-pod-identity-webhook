@@ -6,11 +6,13 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -26,6 +28,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 )
 
 const (
@@ -172,10 +175,15 @@ func main() {
 		Config: cfg,
 	}
 
-	router := setupRouter(webhookServer)
-	server := createHTTPServer(cfg.ListenAddr, router)
+	certWatcher, err := certwatcher.New(cfg.TLSCertPath, cfg.TLSKeyPath)
+	if err != nil {
+		logFatalf("Failed to initialize certificate watcher: %v", err)
+	}
 
-	startServer(server, cfg)
+	router := setupRouter(webhookServer)
+	server := createHTTPServer(cfg.ListenAddr, router, certWatcher.GetCertificate)
+
+	startServer(server, certWatcher)
 }
 
 func parseConfig() Config {
@@ -279,7 +287,7 @@ func loggingMiddleware() gin.HandlerFunc {
 	}
 }
 
-func createHTTPServer(listenAddr string, handler http.Handler) *http.Server {
+func createHTTPServer(listenAddr string, handler http.Handler, getCertificate func(*tls.ClientHelloInfo) (*tls.Certificate, error)) *http.Server {
 	return &http.Server{
 		Addr:              listenAddr,
 		Handler:           handler,
@@ -287,25 +295,47 @@ func createHTTPServer(listenAddr string, handler http.Handler) *http.Server {
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,
 		IdleTimeout:       idleTimeout,
+		TLSConfig: &tls.Config{
+			GetCertificate: getCertificate,
+			MinVersion:     tls.VersionTLS12,
+		},
 	}
 }
 
-func startServer(srv *http.Server, cfg Config) {
-	logInfof("Server listening on %s", cfg.ListenAddr)
+func startServer(srv *http.Server, certWatcher *certwatcher.CertWatcher) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		if err := srv.ListenAndServeTLS(cfg.TLSCertPath, cfg.TLSKeyPath); err != nil && err != http.ErrServerClosed {
+		if err := certWatcher.Start(ctx); err != nil {
+			logErrorf("Certificate watcher error: %v", err)
+		}
+	}()
+	logInfo("Certificate watcher started for hot-reloading")
+
+	listener, err := net.Listen("tcp", srv.Addr)
+	if err != nil {
+		logFatalf("Failed to listen on %s: %v", srv.Addr, err)
+	}
+	tlsListener := tls.NewListener(listener, srv.TLSConfig)
+
+	logInfof("Server listening on %s", srv.Addr)
+
+	go func() {
+		if err := srv.Serve(tlsListener); err != nil && err != http.ErrServerClosed {
 			logFatalf("Failed to start HTTPS server: %v", err)
 		}
 	}()
 
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	logInfo("Shutting down server...")
+	cancel()
 
-	ctxShutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctxShutdown, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelShutdown()
 	if err := srv.Shutdown(ctxShutdown); err != nil {
 		logErrorf("Server forced to shutdown: %v", err)
 	}
