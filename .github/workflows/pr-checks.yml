@@ -14,15 +14,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout code
-      uses: actions/checkout@v6
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
     - name: Set up Go
-      uses: actions/setup-go@v6
+      uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
       with:
         go-version: ${{ env.GO_VERSION }}
 
     - name: Cache Go modules
-      uses: actions/cache@v5
+      uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
       with:
         path: |
           ~/.cache/go-build
@@ -36,4 +36,4 @@ jobs:
 
     - name: Check build
       run: |
-        CGO_ENABLED=0 go build -o /tmp/eks-pod-identity-webhook ./main.go 
+        CGO_ENABLED=0 go build -o /tmp/eks-pod-identity-webhook ./main.go

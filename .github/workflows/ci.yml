@@ -14,17 +14,19 @@ jobs:
   ci:
     name: CI Pipeline
     runs-on: ubuntu-latest
+    permissions:
+      security-events: write
     steps:
     - name: Checkout code
-      uses: actions/checkout@v6
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
     - name: Set up Go
-      uses: actions/setup-go@v6
+      uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
       with:
         go-version: ${{ env.GO_VERSION }}
 
     - name: Cache Go modules
-      uses: actions/cache@v5
+      uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
       with:
         path: |
           ~/.cache/go-build
@@ -39,17 +41,24 @@ jobs:
     - name: Run tests with coverage
       run: make test-coverage
 
-    - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v5
+    - name: Upload coverage artifact
+      uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
       with:
-        file: ./coverage.out
-        flags: unittests
-        name: codecov-umbrella
+        name: coverage
+        path: coverage.out
 
-    - name: Upload SARIF file
-      uses: github/codeql-action/upload-sarif@v4
-      with:
-        sarif_file: results.sarif
+    - name: Upload SARIF to GitHub Security
+      run: |
+        gzip -c results.sarif | base64 -w0 > /tmp/sarif_b64.txt
+        gh api \
+          -X POST \
+          "/repos/${{ github.repository }}/code-scanning/sarifs" \
+          -f "commit_sha=${{ github.sha }}" \
+          -f "ref=${{ github.ref }}" \
+          -f "sarif=$(cat /tmp/sarif_b64.txt)" \
+          --silent
+      env:
+        GH_TOKEN: ${{ github.token }}
 
   docker:
     name: Docker Build and Push
@@ -60,33 +69,56 @@ jobs:
       packages: write
     steps:
     - name: Checkout code
-      uses: actions/checkout@v6
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+      run: |
+        docker buildx create --name multiarch --driver docker-container --use
+        docker buildx inspect --bootstrap
 
     - name: Log in to Container Registry
-      uses: docker/login-action@v3
+      uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
       with:
         registry: ${{ env.REGISTRY }}
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Extract metadata
+    - name: Generate Docker tags and labels
       id: meta
-      uses: docker/metadata-action@v5
-      with:
-        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-        tags: |
-          type=ref,event=branch
-          type=semver,pattern={{version}}
-          type=semver,pattern={{major}}.{{minor}}
-          type=semver,pattern={{major}}
-          type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
-          type=sha
+      run: |
+        IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+        SHA_SHORT="${{ github.sha }}"
+        SHA_TAG="${SHA_SHORT:0:7}"
+        TAGS="${IMAGE}:sha-${SHA_TAG}"
+
+        REF="${{ github.ref }}"
+        if [[ "$REF" == refs/tags/v* ]]; then
+          VERSION="${REF#refs/tags/}"
+          MAJOR_MINOR="${VERSION%.*}"
+          MAJOR="${MAJOR_MINOR%.*}"
+          TAGS="${TAGS},${IMAGE}:${VERSION},${IMAGE}:${MAJOR_MINOR},${IMAGE}:${MAJOR}"
+          if [[ "$VERSION" != *-* ]]; then
+            TAGS="${TAGS},${IMAGE}:latest"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+        elif [[ "$REF" == refs/heads/* ]]; then
+          BRANCH="${REF#refs/heads/}"
+          TAGS="${TAGS},${IMAGE}:${BRANCH}"
+          echo "version=${BRANCH}" >> "$GITHUB_OUTPUT"
+        fi
+
+        echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+
+        {
+          echo "labels<<EOF"
+          echo "org.opencontainers.image.source=https://github.com/${{ github.repository }}"
+          echo "org.opencontainers.image.revision=${{ github.sha }}"
+          echo "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "EOF"
+        } >> "$GITHUB_OUTPUT"
 
     - name: Build and push Docker image
-      uses: docker/build-push-action@v6
+      uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
       with:
         context: .
         platforms: linux/amd64,linux/arm64
