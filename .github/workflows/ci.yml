@@ -15,6 +15,7 @@ jobs:
     name: CI Pipeline
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       security-events: write
     steps:
     - name: Checkout code
@@ -56,7 +57,6 @@ jobs:
           -f "commit_sha=${{ github.sha }}" \
           -f "ref=${{ github.ref }}" \
           -f "sarif=$(cat /tmp/sarif_b64.txt)" \
-          --silent
       env:
         GH_TOKEN: ${{ github.token }}
 
@@ -93,7 +93,7 @@ jobs:
 
         REF="${{ github.ref }}"
         if [[ "$REF" == refs/tags/v* ]]; then
-          VERSION="${REF#refs/tags/}"
+          VERSION="${REF#refs/tags/v}"
           MAJOR_MINOR="${VERSION%.*}"
           MAJOR="${MAJOR_MINOR%.*}"
           TAGS="${TAGS},${IMAGE}:${VERSION},${IMAGE}:${MAJOR_MINOR},${IMAGE}:${MAJOR}"
