@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -61,6 +62,9 @@ const (
 
 	// maxRoleSessionNameLength is the AWS STS limit for role session names
 	maxRoleSessionNameLength = 64
+
+	// jsonPatchOpAdd is the JSON Patch "add" operation
+	jsonPatchOpAdd = "add"
 )
 
 var (
@@ -116,7 +120,7 @@ func init() {
 
 	// Check if debug mode is enabled
 	logLevel := os.Getenv("LOG_LEVEL")
-	debugMode = logLevel == "debug" || logLevel == "DEBUG"
+	debugMode = strings.EqualFold(logLevel, "debug")
 
 	if debugMode {
 		debugLogger.Println("Debug logging enabled")
@@ -530,10 +534,10 @@ func (whs *WebhookServer) createVolumePatches(pod *corev1.Pod) []JSONPatchEntry 
 
 	volumePath := "/spec/volumes"
 	if pod.Spec.Volumes == nil {
-		patches = append(patches, JSONPatchEntry{Op: "add", Path: volumePath, Value: []corev1.Volume{}})
+		patches = append(patches, JSONPatchEntry{Op: jsonPatchOpAdd, Path: volumePath, Value: []corev1.Volume{}})
 	}
 	patches = append(patches, JSONPatchEntry{
-		Op:    "add",
+		Op:    jsonPatchOpAdd,
 		Path:  volumePath + "/-",
 		Value: volume,
 	})
@@ -593,10 +597,10 @@ func (whs *WebhookServer) createVolumeMountPatches(container *corev1.Container, 
 
 	vmMountPath := containerPath + "/volumeMounts"
 	if container.VolumeMounts == nil {
-		patches = append(patches, JSONPatchEntry{Op: "add", Path: vmMountPath, Value: []corev1.VolumeMount{}})
+		patches = append(patches, JSONPatchEntry{Op: jsonPatchOpAdd, Path: vmMountPath, Value: []corev1.VolumeMount{}})
 	}
 	patches = append(patches, JSONPatchEntry{
-		Op:   "add",
+		Op:   jsonPatchOpAdd,
 		Path: vmMountPath + "/-",
 		Value: corev1.VolumeMount{
 			Name:      awsTokenVolumeName,
@@ -622,7 +626,7 @@ func (whs *WebhookServer) createEnvironmentPatches(container *corev1.Container, 
 
 	envPath := containerPath + "/env"
 	if container.Env == nil && len(envVarsToAdd) > 0 {
-		patches = append(patches, JSONPatchEntry{Op: "add", Path: envPath, Value: []corev1.EnvVar{}})
+		patches = append(patches, JSONPatchEntry{Op: jsonPatchOpAdd, Path: envPath, Value: []corev1.EnvVar{}})
 	}
 
 	for _, newEnvVar := range envVarsToAdd {
@@ -636,7 +640,7 @@ func (whs *WebhookServer) createEnvironmentPatches(container *corev1.Container, 
 		}
 		if !envExists {
 			patches = append(patches, JSONPatchEntry{
-				Op:    "add",
+				Op:    jsonPatchOpAdd,
 				Path:  envPath + "/-",
 				Value: newEnvVar,
 			})

@@ -31,8 +31,13 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-go-
 
+    - name: Lint
+      run: |
+        go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+        golangci-lint run ./...
+
     - name: Run CI pipeline
-      run: make ci
+      run: make deps vet security test
 
     - name: Check build
       run: |
