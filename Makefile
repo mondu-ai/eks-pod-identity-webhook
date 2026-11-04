@@ -39,7 +39,7 @@ test-coverage: ## Run tests with coverage
 # Lint the code (excludes e2e which is a separate module)
 lint: ## Run linter
 	@echo "Running linter..."
-	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
 	golangci-lint run ./...
 
 # Format the code
