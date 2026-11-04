@@ -3,11 +3,13 @@ package framework
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 )
@@ -76,6 +78,24 @@ func CreateServiceAccount(ctx context.Context, client kubernetes.Interface, name
 	_, err := client.CoreV1().ServiceAccounts(namespace).Create(ctx, sa, metav1.CreateOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to create service account %s/%s: %w", namespace, name, err)
+	}
+	return nil
+}
+
+// AnnotateServiceAccount adds the eks.amazonaws.com/role-arn annotation to an existing ServiceAccount.
+func AnnotateServiceAccount(ctx context.Context, client kubernetes.Interface, namespace, name, roleArn string) error {
+	patch, err := json.Marshal(map[string]any{
+		"metadata": map[string]any{
+			"annotations": map[string]string{RoleArnAnnotation: roleArn},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to build annotation patch for service account %s/%s: %w", namespace, name, err)
+	}
+
+	_, err = client.CoreV1().ServiceAccounts(namespace).Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to annotate service account %s/%s: %w", namespace, name, err)
 	}
 	return nil
 }

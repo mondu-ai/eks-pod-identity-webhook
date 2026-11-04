@@ -33,24 +33,25 @@ Everything runs from one file, `main.go` (`package main`). There is no `internal
 
 Load-bearing behavior to keep in mind before changing anything:
 
-- **The webhook calls the k8s API mid-admission.** `getRoleArnFromServiceAccount` does a live `ServiceAccounts().Get()` to read the `role-arn` annotation off the SA (the annotation is on the *ServiceAccount*, not the pod). This is why the deployment needs RBAC `get` on serviceaccounts — a behavior change here can require a matching RBAC change in the Helm chart repo.
-- **Fail semantics are asymmetric.** Non-pod resources are *allowed unmutated* (fail-open). But a pod that fails to deserialize, or a patch that fails to build, is *denied* (`Allowed=false`). Preserve this split.
+- **The webhook calls the k8s API mid-admission.** `getRoleArnFromServiceAccount` does a live `ServiceAccounts().Get()` (3s timeout, no client-side rate limit) to read the `role-arn` annotation off the SA (the annotation is on the *ServiceAccount*, not the pod). This is why the deployment needs RBAC `get` on serviceaccounts — a behavior change here can require a matching RBAC change in the Helm chart repo.
+- **Fail semantics are asymmetric.** Non-pod resources and every operation but CREATE are *allowed unmutated* (fail-open). A pod that fails to deserialize, or a patch that fails to build, is *denied* (`Allowed=false`, 500). A failed SA lookup is *denied for a retry*: 503 + `Retry-After`, which clients built on client-go retry — never admitted without credentials. Preserve this split (ADR-0006).
+- **Only kube-apiserver closes idle connections.** It reuses idle keep-alive connections for 90s, and the chart's `failurePolicy: Ignore` turns a call on a server-closed connection into an uninjected pod. So `idleTimeout` stays above 90s, and on SIGTERM `drain` serves with `Connection: close` until clients have closed every connection, up to `SHUTDOWN_DRAIN_TIMEOUT` (default 20s, the chart sets 100s), before `Shutdown`; the chart's `terminationGracePeriodSeconds` must cover it (ADR-0007).
 - **Injection is idempotent.** Every `create*Patches` helper checks for an existing volume / mount / env var by name and skips it rather than duplicating or overwriting. Env vars already set by the user are never clobbered.
 - **All containers + init containers** get the mount and env vars; the token volume is added once at the pod level.
 - **Session-name generation** (`generateRoleSessionName`) has a fallback chain: pod name → `generateName`+UnixNano → `namespace-serviceaccount` → `namespace-pod`, then sanitized to the AWS STS charset `[A-Za-z0-9+=,.@_-]` and truncated to 64 chars. Pods created by controllers often have no `.Name` yet at admission time — that's what the chain handles.
 - **TLS certs hot-reload** via controller-runtime `certwatcher` wired into `tls.Config.GetCertificate`; the watcher goroutine is started in `startServer`. Rotating the cert secret must *not* require a pod restart (there's an e2e test asserting this).
 - HTTP layer is **Gin** (`/mutate` POST, `/healthz` GET) over TLS on `:8443`. Kube config resolves from `KUBECONFIG` if set, else in-cluster.
 
-Config comes from flags (`-tls-cert-path`, `-tls-key-path`, `-listen-addr`, `-aws-region`) plus env (`LOG_LEVEL=debug` toggles debug logs, `ENV`, `AWS_REGION`). Logging is hand-rolled leveled loggers (`logInfo`/`logWarn`/`logError`/`logDebug`), not a structured logger.
+Config comes from flags (`-tls-cert-path`, `-tls-key-path`, `-listen-addr`, `-aws-region`) plus env (`LOG_LEVEL=debug` toggles debug logs, `ENV`, `AWS_REGION`, `SHUTDOWN_DRAIN_TIMEOUT` as a Go duration). Logging is hand-rolled leveled loggers (`logInfo`/`logWarn`/`logError`/`logDebug`), not a structured logger.
 
 ## Two Go modules — this trips people up
 
 - **Root module** `eks-iam-pod-identity-webhook` (go 1.26) — the webhook + `main_test.go`.
 - **`e2e/` module** `eks-pod-identity-webhook-e2e` (go 1.24) — a *separate* module.
 
-Consequences: `go test ./...`, `make lint`, `vet`, and `security` from the root **do not touch `e2e/`** (it's excluded in the Makefile and `.golangci.yml`). To work on e2e, `cd e2e` first.
+Consequences: `go test ./...`, `make lint`, `vet`, and `security` from the root **do not touch `e2e/`** (it's excluded in the Makefile and `.golangci.yml`). To work on e2e, `cd e2e` first. CI runs `make e2e` through the reusable `.github/workflows/e2e.yml`: on every PR after the quick checks, and on `main`/`develop`/`v*` before the image is built and pushed.
 
-The e2e suite (`e2e/framework/`) creates a Kind cluster, builds the local Docker image tagged `eks-pod-identity-webhook:e2e-test`, and installs the webhook using the **published Helm chart** pulled from `https://mondu-ai.github.io/helm-charts-community` with `image.pullPolicy=Never` + `certManager.enabled=false`. So e2e exercises the real chart, not local manifests — a breaking change to the injected shape may need a coordinated change in the chart repo. All e2e tests share one cluster via `TestMain`; you can't run a single e2e test without that setup path running first. `make e2e` requires Docker.
+The e2e suite (`e2e/framework/`) creates a Kind cluster, builds the local Docker image tagged `eks-pod-identity-webhook:e2e-test`, and installs the webhook using the **published Helm chart** pulled from `https://mondu-ai.github.io/helm-charts-community` with `image.pullPolicy=Never` + `certManager.enabled=false`, then patches the Deployment with the chart's drain settings (`SHUTDOWN_DRAIN_TIMEOUT=100s`, `terminationGracePeriodSeconds: 120`) until the published chart sets them. So e2e exercises the real chart, not local manifests — a breaking change to the injected shape may need a coordinated change in the chart repo. All e2e tests share one cluster via `TestMain`; you can't run a single e2e test without that setup path running first. `make e2e` requires Docker.
 
 ## Conventions
 
@@ -62,6 +63,7 @@ The e2e suite (`e2e/framework/`) creates a Kind cluster, builds the local Docker
 
 CI (`ci.yml` → `docker` job) publishes images to `ghcr.io/mondu-ai/eks-pod-identity-webhook`:
 
+- The `docker` job runs only after the `ci` and `e2e` jobs pass, so no image is published without a green e2e run.
 - **Push to `main`/`develop`** → `sha-<short>` and `<branch>` tags only. Dev images, not a release.
 - **Push a `v*` tag** → semver tags (`X.Y.Z`, `X.Y`, `X`) plus `latest` (`latest` is skipped for pre-releases — versions containing `-`). This is the only path to a versioned/`latest` image.
 

@@ -6,12 +6,12 @@ One thing ships: a static Go binary in a `scratch` container (`ghcr.io`), deploy
 
 ## Runtime shape
 
-- **HTTP layer:** Gin, TLS-only, listening on `:8443`.
+- **HTTP layer:** Gin, TLS-only, **HTTP/1.1 only** (`TLSNextProto` is empty), listening on `:8443`.
   - `POST /mutate` — the admission entry point (`handleMutatePod`).
   - `GET /healthz` — liveness/readiness (`handleHealthz`).
-- **Kube client:** in-cluster config by default; `KUBECONFIG` env overrides for local runs.
+- **Kube client:** in-cluster config by default; `KUBECONFIG` env overrides for local runs. Client-side rate limiting is off (`QPS = -1`), as in kube-apiserver's own webhook client.
 - **TLS:** certificate is served through controller-runtime `certwatcher`, wired into `tls.Config.GetCertificate`. Cert rotation is picked up live — **no pod restart** on secret rotation.
-- **Shutdown:** SIGINT/SIGTERM trigger a 5s graceful `server.Shutdown`; the certwatcher goroutine is cancelled via context.
+- **Shutdown:** the first SIGINT/SIGTERM starts a **drain** (`drain`): every response carries `Connection: close` (`closeWhileDraining`), for at least `shutdownDrainDelay` (10s, while the replica leaves the Service endpoints) and then until clients have closed every connection, counted through `http.Server.ConnState` (`trackConnState`), capped at the drain timeout from `SHUTDOWN_DRAIN_TIMEOUT` (default 20s; the chart sets 100s). Only then a 5s `server.Shutdown`; the certwatcher goroutine is cancelled via context. A second signal ends the process at once. See ADR-0007.
 
 ## Request lifecycle
 
@@ -22,10 +22,11 @@ handleMutatePod
   → parseAdmissionReview        decode AdmissionReview, reject nil request
   → processAdmissionRequest
       → isValidPodResource      non-pod → ALLOW unmutated (fail-open)
-      → deserializePod          decode failure → DENY (fail-closed)
-      → createMutationResponse
-          → createPatch
-              → getRoleArnFromServiceAccount   ← live k8s API call
+      → request.Operation       anything but CREATE → ALLOW unmutated, no SA lookup
+      → deserializePod          decode failure → DENY 500 (fail-closed)
+      → createMutationResponse  SA lookup failure → DENY 503 + Retry-After (retryableDenial)
+          → createPatch         patch build failure → DENY 500
+              → getRoleArnFromServiceAccount   ← live k8s API call, 3s timeout
               → createVolumePatches            pod-level token volume
               → createContainerPatches
                   → addMutationsToContainers   init + main containers
@@ -53,7 +54,10 @@ The webhook exists to be **wire-compatible with EKS IRSA**. These constants are 
 
 These are not incidental — preserve them across changes:
 
-- **Asymmetric fail semantics.** Non-pod resources are *allowed unmutated*. A pod that fails to deserialize, or whose patch fails to build, is *denied* (`Allowed: false`). Don't flatten this into "always allow" or "always deny".
+- **Asymmetric fail semantics.** Non-pod resources are *allowed unmutated*. A pod that fails to deserialize, or whose patch fails to build, is *denied* (`Allowed: false`, 500). Don't flatten this into "always allow" or "always deny".
+- **An unknown role denies for a retry, never admits.** When the ServiceAccount lookup fails (`errServiceAccountLookup`), the pod is denied with 503 `ServiceUnavailable` and `Details.RetryAfterSeconds`; kube-apiserver turns that into `Retry-After`, which clients built on client-go, the built-in controllers among them, retry. Admitting it unmutated would start a pod without AWS credentials. The lookup has its own 3s timeout so the webhook decides before the apiserver's webhook timeout — past it, the chart's `failurePolicy: Ignore` admits the pod unmutated. See ADR-0006.
+- **Only CREATE is mutated.** A pod's volumes and env are immutable after creation; a patch on UPDATE gets the whole update rejected by the apiserver.
+- **The client closes idle connections, never the server.** kube-apiserver reuses idle HTTP/1.1 keep-alive connections to webhooks for 90s (`http.DefaultTransport.IdleConnTimeout`); a server-side close of one it is about to reuse fails the call, and `failurePolicy: Ignore` then admits the pod unmutated. Hence `idleTimeout` (120s) must stay above 90s, and the drain waits for clients instead of closing idle connections. The chart's `terminationGracePeriodSeconds` must cover the drain timeout plus the 5s shutdown: the defaults (20s + 5s) fit Kubernetes' default 30s, and the chart sets 100s with a 120s grace period.
 - **Idempotency.** Every `create*Patches` helper checks for the volume / mount / env var *by name* before adding it. A user-set env var is never overwritten; a re-admitted pod isn't double-patched.
 - **Injection reaches all containers.** Both `initContainers` and `containers` get the mount + env vars; the token volume is added once at pod level.
 - **RBAC coupling.** `getRoleArnFromServiceAccount` does a live `ServiceAccounts().Get()` — the annotation lives on the *ServiceAccount*, not the pod. The deployment therefore needs RBAC `get` on `serviceaccounts`. That RBAC lives in the **chart repo**, so adding new API calls here requires a coordinated change there.
@@ -65,9 +69,9 @@ The service is a single flat `package main` — there is no `internal/` or `pkg/
 Two **separate Go modules** live here:
 
 - **Root** — `eks-iam-pod-identity-webhook` (go 1.26): the webhook + `main_test.go` (unit tests, table-driven, testify).
-- **`e2e/`** — `eks-pod-identity-webhook-e2e` (go 1.24): a standalone module. `TestMain` provisions a Kind cluster, builds the local image as `eks-pod-identity-webhook:e2e-test`, and installs the webhook using the **published Helm chart** (`pullPolicy=Never`, `certManager.enabled=false`). It exercises the real chart contract, not local manifests. `e2e/framework/` holds the cluster/helm/cert/pod-builder helpers.
+- **`e2e/`** — `eks-pod-identity-webhook-e2e` (go 1.24): a standalone module. `TestMain` provisions a Kind cluster, builds the local image as `eks-pod-identity-webhook:e2e-test`, and installs the webhook using the **published Helm chart** (`pullPolicy=Never`, `certManager.enabled=false`), then patches the Deployment with the chart's drain settings (`SHUTDOWN_DRAIN_TIMEOUT=100s`, `terminationGracePeriodSeconds: 120`) until the published chart sets them. It exercises the real chart contract, not local manifests. `e2e/framework/` holds the cluster/helm/cert/pod-builder helpers plus webhook restarts (`rollout.go`) and RBAC revocation (`rbac.go`). Load tests (burst, rollout) admit pods by dry-run through `burstClientset`, which has no client-side rate limit, so the load actually reaches the webhook.
 
-`go test ./...`, `make lint`, `vet`, and `security` from the root **do not touch `e2e/`** — it's a different module, explicitly excluded in the Makefile and `.golangci.yml`.
+`go test ./...`, `make lint`, `vet`, and `security` from the root **do not touch `e2e/`** — it's a different module, explicitly excluded in the Makefile and `.golangci.yml`. CI runs it separately via the reusable `.github/workflows/e2e.yml`, on every PR and before every image push.
 
 ## External boundaries
 
@@ -85,11 +89,13 @@ This project is a single flat package, so drift shows up in specific, greppable 
   Any changed value is either a documented, intentional break of EKS compatibility (rare — update this doc *and* flag it loudly) or a bug.
 - **Endpoints** in the "Runtime shape" section match `setupRouter`:
   `grep -nE 'router\.(POST|GET)' main.go`
-- **Config surface** matches `parseConfig`:
-  `grep -n 'flag\.StringVar' main.go`
+- **Config surface** matches `parseConfig` (flags plus `SHUTDOWN_DRAIN_TIMEOUT`):
+  `grep -nE 'flag\.StringVar|Getenv' main.go`
 - **Request-lifecycle chain** still reflects the real call graph — if handlers/helpers are renamed, split, or reordered, update the diagram.
 - **RBAC coupling** — if a new k8s API call is added (anything beyond the SA `Get`), note it here and confirm the chart repo's RBAC grants it.
-- **Module boundary** — if `e2e/`'s Kind/Helm flow changes (new `--set` flags, different chart source), update the "Code layout" and boundaries sections. Chart `--set` flags live in `e2e/framework/helm.go`.
+- **Module boundary** — if `e2e/`'s Kind/Helm flow changes (new `--set` flags, different chart source, post-install patches), update the "Code layout" and boundaries sections. Chart `--set` flags live in `e2e/framework/helm.go`; the grace-period patch in `e2e/framework/rollout.go` goes once the published chart sets it.
+- **Connection lifecycle** — `idleTimeout` stays above kube-apiserver's 90s keep-alive, and the default drain timeout plus `shutdownTimeout` fits Kubernetes' default 30s grace period, and the chart's `terminationGracePeriodSeconds` covers its own `shutdownDrainTimeout` plus 5s:
+  `grep -nE 'idleTimeout|ShutdownDrain|shutdownTimeout' main.go`
 - **Go version** stays aligned across `go.mod`, the Dockerfile builder, and CI (`setup-go`).
 
 Run `/pilat:arch-sync` to check automatically.

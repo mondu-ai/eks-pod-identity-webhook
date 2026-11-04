@@ -1,0 +1,42 @@
+name: E2E
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+env:
+  GO_VERSION: '1.26'
+
+jobs:
+  e2e:
+    name: E2E on Kind
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+    - name: Set up Go
+      uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
+      with:
+        go-version: ${{ env.GO_VERSION }}
+
+    - name: Cache Go modules
+      uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
+      with:
+        path: |
+          ~/.cache/go-build
+          ~/go/pkg/mod
+        key: ${{ runner.os }}-go-e2e-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-e2e-
+
+    - name: Show tool versions
+      run: |
+        docker version --format 'docker {{.Server.Version}}'
+        helm version --short
+
+    - name: Run e2e tests
+      run: make e2e

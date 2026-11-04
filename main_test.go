@@ -5,11 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -20,7 +23,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/rest"
 	k8stesting "k8s.io/client-go/testing"
 )
 
@@ -944,7 +949,8 @@ func createAdmissionReview(pod *corev1.Pod) admissionv1.AdmissionReview {
 			APIVersion: "admission.k8s.io/v1",
 		},
 		Request: &admissionv1.AdmissionRequest{
-			UID: "test-uid",
+			UID:       "test-uid",
+			Operation: admissionv1.Create,
 			Resource: metav1.GroupVersionResource{
 				Group:    "",
 				Version:  "v1",
@@ -1091,5 +1097,240 @@ func BenchmarkHandleMutatePod(b *testing.B) {
 		if recorder.Code != http.StatusOK {
 			b.Fatalf("Expected status %d, got %d", http.StatusOK, recorder.Code)
 		}
+	}
+}
+
+// TestCreateHTTPServerIdleTimeout pins the keep-alive handshake with kube-apiserver, whose webhook
+// client reuses idle HTTP/1.1 connections until http.DefaultTransport.IdleConnTimeout.
+func TestCreateHTTPServerIdleTimeout(t *testing.T) {
+	apiserverTransport, ok := http.DefaultTransport.(*http.Transport)
+	require.True(t, ok, "http.DefaultTransport should be an *http.Transport")
+
+	srv := createHTTPServer(defaultListenAddr, http.NewServeMux(), nil)
+
+	assert.Greater(t, srv.IdleTimeout, apiserverTransport.IdleConnTimeout,
+		"the server must not close an idle connection the apiserver may still reuse")
+}
+
+// TestProcessAdmissionRequestServiceAccountLookupError tests that a failed ServiceAccount lookup
+// denies the pod with a status Kubernetes clients retry, not a terminal one.
+func TestProcessAdmissionRequestServiceAccountLookupError(t *testing.T) {
+	clientset := fake.NewClientset()
+	clientset.PrependReactor("get", "serviceaccounts", func(_ k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, fmt.Errorf("kubernetes API error")
+	})
+	server := &WebhookServer{Client: clientset, Config: Config{AWSRegion: "us-west-2"}}
+	review := createAdmissionReview(createPodWithServiceAccount("test-pod", "test-ns", "test-sa"))
+
+	assertRetryableDenial(t, server.processAdmissionRequest(context.Background(), review.Request))
+}
+
+// TestProcessAdmissionRequestSlowServiceAccountLookup tests that the webhook decides on a hanging
+// ServiceAccount lookup before the apiserver gives up on it and admits the pod unmutated.
+func TestProcessAdmissionRequestSlowServiceAccountLookup(t *testing.T) {
+	const decisionBudget = 5 * time.Second // half of the default 10s webhook timeoutSeconds
+
+	release := make(chan struct{})
+	apiserver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+		w.WriteHeader(http.StatusGatewayTimeout)
+	}))
+	defer apiserver.Close()
+	defer close(release)
+
+	client, err := kubernetes.NewForConfig(&rest.Config{Host: apiserver.URL})
+	require.NoError(t, err)
+	server := &WebhookServer{Client: client, Config: Config{AWSRegion: "us-west-2"}}
+	review := createAdmissionReview(createPodWithServiceAccount("test-pod", "test-ns", "test-sa"))
+
+	answered := make(chan *admissionv1.AdmissionResponse, 1)
+	go func() {
+		answered <- server.processAdmissionRequest(context.Background(), review.Request)
+	}()
+
+	select {
+	case res := <-answered:
+		assertRetryableDenial(t, res)
+	case <-time.After(decisionBudget):
+		t.Fatalf("no admission decision within %s while the ServiceAccount lookup hangs", decisionBudget)
+	}
+}
+
+func assertRetryableDenial(t *testing.T, res *admissionv1.AdmissionResponse) {
+	t.Helper()
+
+	require.False(t, res.Allowed, "a pod must not be admitted while its role is unknown")
+	require.NotNil(t, res.Result)
+	assert.Equal(t, int32(http.StatusServiceUnavailable), res.Result.Code)
+	assert.Equal(t, metav1.StatusReasonServiceUnavailable, res.Result.Reason)
+	require.NotNil(t, res.Result.Details, "the apiserver sets Retry-After from Details.RetryAfterSeconds")
+	assert.Positive(t, res.Result.Details.RetryAfterSeconds)
+}
+
+// TestCloseWhileDraining tests that a connection stays open for reuse while serving, and that once
+// draining starts the server closes it after the response and tells the client so.
+func TestCloseWhileDraining(t *testing.T) {
+	server, client, url := startDrainTestServer(t)
+
+	assert.False(t, get(t, client, url), "connections stay reusable while serving")
+	assert.Equal(t, int64(1), server.openConns.Load())
+
+	server.draining.Store(true)
+
+	assert.True(t, get(t, client, url), "the response should tell the client to close the connection")
+	assert.Eventually(t, func() bool { return server.openConns.Load() == 0 }, 2*time.Second, 10*time.Millisecond,
+		"the server should close the connection after the response")
+}
+
+// TestDrainWaitsForClientsToCloseConnections tests that draining outlasts an idle keep-alive connection
+// until its client closes it, since closing it from the server races the client's reuse of it.
+func TestDrainWaitsForClientsToCloseConnections(t *testing.T) {
+	server, client, url := startDrainTestServer(t)
+	idle(t, client, url)
+
+	drained := make(chan struct{})
+	go func() {
+		server.drain(50*time.Millisecond, 5*time.Second)
+		close(drained)
+	}()
+
+	select {
+	case <-drained:
+		t.Fatal("drain finished while a client still held an idle connection")
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	client.CloseIdleConnections()
+
+	select {
+	case <-drained:
+	case <-time.After(2 * time.Second):
+		t.Fatal("drain kept waiting after the client closed its connection")
+	}
+}
+
+// TestDrainGivesUpAfterMaxDelay tests that a client which never lets go cannot hold off shutdown forever.
+func TestDrainGivesUpAfterMaxDelay(t *testing.T) {
+	server, client, url := startDrainTestServer(t)
+	idle(t, client, url)
+
+	const maxDelay = 300 * time.Millisecond
+
+	start := time.Now()
+	drained := make(chan struct{})
+	go func() {
+		server.drain(50*time.Millisecond, maxDelay)
+		close(drained)
+	}()
+
+	select {
+	case <-drained:
+		assert.GreaterOrEqual(t, time.Since(start), maxDelay, "drain gave up before its maximum delay")
+	case <-time.After(2 * time.Second):
+		t.Fatal("drain did not give up at its maximum delay")
+	}
+}
+
+func startDrainTestServer(t *testing.T) (*WebhookServer, *http.Client, string) {
+	t.Helper()
+
+	server := &WebhookServer{Client: fake.NewClientset(), Config: Config{AWSRegion: "us-west-2"}}
+	srv := createHTTPServer("127.0.0.1:0", setupRouter(server), nil)
+	srv.ConnState = server.trackConnState
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	go func() {
+		_ = srv.Serve(listener) //nolint:errcheck // stopped by Close below
+	}()
+	t.Cleanup(func() {
+		_ = srv.Close() //nolint:errcheck // test cleanup
+	})
+
+	client := &http.Client{Transport: &http.Transport{}}
+	t.Cleanup(client.CloseIdleConnections)
+	return server, client, "http://" + listener.Addr().String() + "/healthz"
+}
+
+// idle makes one request and leaves its keep-alive connection idle in the client's pool.
+func idle(t *testing.T, client *http.Client, url string) {
+	t.Helper()
+	get(t, client, url)
+}
+
+// get makes one request and reports whether the response asked to close the connection.
+func get(t *testing.T, client *http.Client, url string) bool {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, http.NoBody)
+	require.NoError(t, err)
+	res, err := client.Do(req)
+	require.NoError(t, err)
+	_, err = io.Copy(io.Discard, res.Body)
+	require.NoError(t, err)
+	require.NoError(t, res.Body.Close())
+	return res.Close
+}
+
+// TestProcessAdmissionRequestNonCreate tests that only pod creation is mutated: a pod's volumes and env are
+// immutable afterwards, so the webhook neither looks up the ServiceAccount nor patches.
+func TestProcessAdmissionRequestNonCreate(t *testing.T) {
+	operations := map[string]admissionv1.Operation{
+		"update":  admissionv1.Update,
+		"delete":  admissionv1.Delete,
+		"connect": admissionv1.Connect,
+	}
+
+	for hint, operation := range operations {
+		t.Run(hint, func(t *testing.T) {
+			clientset := fake.NewClientset()
+			server := &WebhookServer{Client: clientset, Config: Config{AWSRegion: "us-west-2"}}
+			review := createAdmissionReview(createPodWithServiceAccount("test-pod", "test-ns", "test-sa"))
+			review.Request.Operation = operation
+
+			res := server.processAdmissionRequest(context.Background(), review.Request)
+
+			assert.True(t, res.Allowed)
+			assert.Nil(t, res.Patch)
+			assert.Empty(t, clientset.Actions(), "the ServiceAccount should not be looked up")
+		})
+	}
+}
+
+// TestDefaultShutdownFitsDefaultGracePeriod tests that a chart without a longer terminationGracePeriodSeconds
+// does not kill the webhook in the middle of its drain.
+func TestDefaultShutdownFitsDefaultGracePeriod(t *testing.T) {
+	const kubernetesDefaultGracePeriod = 30 * time.Second
+
+	assert.LessOrEqual(t, defaultShutdownDrainTimeout+shutdownTimeout, kubernetesDefaultGracePeriod)
+}
+
+func TestParseShutdownDrainTimeout(t *testing.T) {
+	cases := map[string]struct {
+		value     string
+		expected  time.Duration
+		expectErr bool
+	}{
+		"unset":    {value: "", expected: defaultShutdownDrainTimeout},
+		"set":      {value: "100s", expected: 100 * time.Second},
+		"invalid":  {value: "soon", expectErr: true},
+		"zero":     {value: "0s", expectErr: true},
+		"negative": {value: "-5s", expectErr: true},
+	}
+
+	for hint, c := range cases {
+		t.Run(hint, func(t *testing.T) {
+			timeout, err := parseShutdownDrainTimeout(c.value)
+
+			if c.expectErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, c.expected, timeout)
+		})
 	}
 }
