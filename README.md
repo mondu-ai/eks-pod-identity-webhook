@@ -27,7 +27,7 @@ A Kubernetes mutating admission webhook that enables pods running in non-EKS clu
 
 The webhook intercepts pod creation requests and automatically injects the necessary AWS credentials when:
 
-1. **Pod Detection**: A pod is created/updated with a ServiceAccount
+1. **Pod Detection**: A pod is created with a ServiceAccount
 2. **Annotation Check**: The ServiceAccount has the `eks.amazonaws.com/role-arn` annotation
 3. **Automatic Injection**: The webhook injects:
    - AWS IAM role ARN environment variable

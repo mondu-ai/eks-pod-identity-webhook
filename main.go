@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -58,7 +60,18 @@ const (
 	readHeaderTimeout = 15 * time.Second
 	readTimeout       = 30 * time.Second
 	writeTimeout      = 30 * time.Second
-	idleTimeout       = 60 * time.Second
+	idleTimeout       = 120 * time.Second // above kube-apiserver's 90s keep-alive
+
+	// Graceful shutdown
+	shutdownDrainDelay          = 10 * time.Second
+	defaultShutdownDrainTimeout = 20 * time.Second // fits the default 30s grace period
+	shutdownDrainTimeoutEnv     = "SHUTDOWN_DRAIN_TIMEOUT"
+	shutdownTimeout             = 5 * time.Second
+	drainPollInterval           = 100 * time.Millisecond
+
+	// ServiceAccount lookup, decided before the apiserver's webhook timeout
+	serviceAccountLookupTimeout = 3 * time.Second
+	lookupRetryAfterSeconds     = 1
 
 	// maxRoleSessionNameLength is the AWS STS limit for role session names
 	maxRoleSessionNameLength = 64
@@ -79,20 +92,26 @@ var (
 	errorLogger *log.Logger
 	debugLogger *log.Logger
 	debugMode   bool
+
+	errServiceAccountLookup = errors.New("failed to get ServiceAccount")
 )
 
 // Config holds the webhook configuration
 type Config struct {
-	TLSCertPath string
-	TLSKeyPath  string
-	ListenAddr  string
-	AWSRegion   string
+	TLSCertPath          string
+	TLSKeyPath           string
+	ListenAddr           string
+	AWSRegion            string
+	ShutdownDrainTimeout time.Duration
 }
 
 // WebhookServer holds the dependencies for the webhook server
 type WebhookServer struct {
 	Client kubernetes.Interface
 	Config Config
+
+	draining  atomic.Bool
+	openConns atomic.Int64
 }
 
 // JSONPatchEntry represents a single JSON patch operation for modifying Kubernetes resources
@@ -187,7 +206,7 @@ func main() {
 	router := setupRouter(webhookServer)
 	server := createHTTPServer(cfg.ListenAddr, router, certWatcher.GetCertificate)
 
-	startServer(server, certWatcher)
+	startServer(server, certWatcher, webhookServer)
 }
 
 func parseConfig() Config {
@@ -198,9 +217,15 @@ func parseConfig() Config {
 	flag.StringVar(&cfg.AWSRegion, "aws-region", defaultAWSRegion, "Default AWS region for injected pods.")
 	flag.Parse()
 
+	drainTimeout, err := parseShutdownDrainTimeout(os.Getenv(shutdownDrainTimeoutEnv))
+	if err != nil {
+		logFatalf("Invalid %s: %v", shutdownDrainTimeoutEnv, err)
+	}
+	cfg.ShutdownDrainTimeout = drainTimeout
+
 	logInfof("Starting EKS IAM Pod Identity Webhook version %s", Version)
-	logInfof("Loaded configuration: listen_addr=%s, aws_region=%s, tls_cert_path=%s, tls_key_path=%s, env=%s",
-		cfg.ListenAddr, cfg.AWSRegion, cfg.TLSCertPath, cfg.TLSKeyPath, os.Getenv("ENV"))
+	logInfof("Loaded configuration: listen_addr=%s, aws_region=%s, tls_cert_path=%s, tls_key_path=%s, shutdown_drain_timeout=%s, env=%s",
+		cfg.ListenAddr, cfg.AWSRegion, cfg.TLSCertPath, cfg.TLSKeyPath, cfg.ShutdownDrainTimeout, os.Getenv("ENV"))
 
 	return cfg
 }
@@ -234,6 +259,7 @@ func setupKubernetesConfig() *rest.Config {
 }
 
 func createKubernetesClient(kubeConfig *rest.Config) kubernetes.Interface {
+	kubeConfig.QPS = -1 // a client-side queue would outlast the apiserver's webhook timeout
 	clientset, err := kubernetes.NewForConfig(kubeConfig)
 	if err != nil {
 		logFatalf("Failed to create Kubernetes clientset: %v", err)
@@ -245,6 +271,7 @@ func setupRouter(webhookServer *WebhookServer) *gin.Engine {
 	router := gin.New()
 	router.Use(gin.Recovery()) // Gin's recovery middleware will handle panics
 	router.Use(loggingMiddleware())
+	router.Use(webhookServer.closeWhileDraining())
 
 	router.POST("/mutate", webhookServer.handleMutatePod)
 	router.GET("/healthz", webhookServer.handleHealthz)
@@ -299,6 +326,7 @@ func createHTTPServer(listenAddr string, handler http.Handler, getCertificate fu
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,
 		IdleTimeout:       idleTimeout,
+		TLSNextProto:      map[string]func(*http.Server, *tls.Conn, http.Handler){}, // HTTP/1.1 only
 		TLSConfig: &tls.Config{
 			GetCertificate: getCertificate,
 			MinVersion:     tls.VersionTLS12,
@@ -306,7 +334,7 @@ func createHTTPServer(listenAddr string, handler http.Handler, getCertificate fu
 	}
 }
 
-func startServer(srv *http.Server, certWatcher *certwatcher.CertWatcher) {
+func startServer(srv *http.Server, certWatcher *certwatcher.CertWatcher, webhookServer *WebhookServer) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -325,6 +353,7 @@ func startServer(srv *http.Server, certWatcher *certwatcher.CertWatcher) {
 		logFatalf("Failed to listen on %s: %v", srv.Addr, err)
 	}
 	tlsListener := tls.NewListener(listener, srv.TLSConfig)
+	srv.ConnState = webhookServer.trackConnState
 
 	logInfof("Server listening on %s", srv.Addr)
 
@@ -335,10 +364,15 @@ func startServer(srv *http.Server, certWatcher *certwatcher.CertWatcher) {
 	}()
 
 	<-quit
+	signal.Stop(quit)
+	drainTimeout := webhookServer.Config.ShutdownDrainTimeout
+	logInfof("Draining for %s to %s before shutdown...", shutdownDrainDelay, drainTimeout)
+	webhookServer.drain(shutdownDrainDelay, drainTimeout)
+
 	logInfo("Shutting down server...")
 	cancel()
 
-	ctxShutdown, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
+	ctxShutdown, cancelShutdown := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancelShutdown()
 	if err := srv.Shutdown(ctxShutdown); err != nil {
 		logErrorf("Server forced to shutdown: %v", err)
@@ -349,6 +383,41 @@ func startServer(srv *http.Server, certWatcher *certwatcher.CertWatcher) {
 
 func (whs *WebhookServer) handleHealthz(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+// closeWhileDraining makes the apiserver drop each connection after its response once draining starts.
+func (whs *WebhookServer) closeWhileDraining() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if whs.draining.Load() {
+			c.Header("Connection", "close")
+		}
+		c.Next()
+	}
+}
+
+// drain waits for clients to close every connection, since closing one from the server races its reuse.
+func (whs *WebhookServer) drain(minDelay, maxDelay time.Duration) {
+	whs.draining.Store(true)
+	time.Sleep(minDelay)
+
+	deadline := time.Now().Add(maxDelay - minDelay)
+	for whs.openConns.Load() > 0 && time.Now().Before(deadline) {
+		time.Sleep(drainPollInterval)
+	}
+
+	if open := whs.openConns.Load(); open > 0 {
+		logWarnf("Shutting down with %d connections still open after %s.", open, maxDelay)
+	}
+}
+
+func (whs *WebhookServer) trackConnState(_ net.Conn, state http.ConnState) {
+	switch state {
+	case http.StateNew:
+		whs.openConns.Add(1)
+	case http.StateHijacked, http.StateClosed:
+		whs.openConns.Add(-1)
+	case http.StateActive, http.StateIdle:
+	}
 }
 
 func (whs *WebhookServer) handleMutatePod(c *gin.Context) {
@@ -404,6 +473,12 @@ func (whs *WebhookServer) processAdmissionRequest(ctx context.Context, request *
 		return admissionResponse
 	}
 
+	// Volumes and env cannot be added to an existing pod.
+	if request.Operation != admissionv1.Create {
+		logDebugf("Allowing %s of pod %s/%s without mutation.", request.Operation, request.Namespace, request.Name)
+		return admissionResponse
+	}
+
 	pod, err := whs.deserializePod(request.Object.Raw)
 	if err != nil {
 		logErrorf("Failed to deserialize Pod: %v", err)
@@ -432,6 +507,12 @@ func (whs *WebhookServer) deserializePod(raw []byte) (*corev1.Pod, error) {
 
 func (whs *WebhookServer) createMutationResponse(ctx context.Context, pod *corev1.Pod, response *admissionv1.AdmissionResponse) *admissionv1.AdmissionResponse {
 	patchBytes, err := whs.createPatch(ctx, pod)
+	if errors.Is(err, errServiceAccountLookup) {
+		logErrorf("Denying pod %s/%s for a retry: %v", pod.Namespace, pod.Name, err)
+		response.Allowed = false
+		response.Result = retryableDenial(err)
+		return response
+	}
 	if err != nil {
 		logErrorf("Failed to create patch for pod %s/%s: %v", pod.Namespace, pod.Name, err)
 		response.Allowed = false
@@ -484,9 +565,12 @@ func (whs *WebhookServer) createPatch(ctx context.Context, pod *corev1.Pod) ([]b
 }
 
 func (whs *WebhookServer) getRoleArnFromServiceAccount(ctx context.Context, pod *corev1.Pod) (string, error) {
-	sa, err := whs.Client.CoreV1().ServiceAccounts(pod.Namespace).Get(ctx, pod.Spec.ServiceAccountName, metav1.GetOptions{})
+	lookupCtx, cancel := context.WithTimeout(ctx, serviceAccountLookupTimeout)
+	defer cancel()
+
+	sa, err := whs.Client.CoreV1().ServiceAccounts(pod.Namespace).Get(lookupCtx, pod.Spec.ServiceAccountName, metav1.GetOptions{})
 	if err != nil {
-		return "", fmt.Errorf("failed to get ServiceAccount %s/%s: %w", pod.Namespace, pod.Spec.ServiceAccountName, err)
+		return "", fmt.Errorf("%w %s/%s: %w", errServiceAccountLookup, pod.Namespace, pod.Spec.ServiceAccountName, err)
 	}
 
 	roleArn, ok := sa.Annotations[awsRoleArnAnnotationKey]
@@ -707,4 +791,30 @@ func sanitizeSessionName(name string) string {
 		}
 	}
 	return string(result)
+}
+
+// retryableDenial denies with 503 and Retry-After, which client-go retries, unlike a 500.
+func retryableDenial(err error) *metav1.Status {
+	return &metav1.Status{
+		Status:  metav1.StatusFailure,
+		Message: err.Error(),
+		Reason:  metav1.StatusReasonServiceUnavailable,
+		Code:    http.StatusServiceUnavailable,
+		Details: &metav1.StatusDetails{RetryAfterSeconds: lookupRetryAfterSeconds},
+	}
+}
+
+func parseShutdownDrainTimeout(value string) (time.Duration, error) {
+	if value == "" {
+		return defaultShutdownDrainTimeout, nil
+	}
+
+	timeout, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse %q as a duration: %w", value, err)
+	}
+	if timeout <= 0 {
+		return 0, fmt.Errorf("drain timeout %s is not positive", value)
+	}
+	return timeout, nil
 }

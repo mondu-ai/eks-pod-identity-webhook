@@ -12,14 +12,23 @@ import (
 	"time"
 
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 
 	"eks-pod-identity-webhook-e2e/framework"
 )
 
+const (
+	webhookDrainTimeout = "100s" // above kube-apiserver's 90s keep-alive
+	// webhookTerminationGracePeriodSeconds covers the drain plus the webhook's 5s shutdown.
+	webhookTerminationGracePeriodSeconds = 120
+)
+
 var (
 	testClientset kubernetes.Interface
-	clusterCfg    *framework.ClusterConfig
-	retain        bool
+	// burstClientset skips client-side rate limiting, as the apiserver's own webhook client does.
+	burstClientset kubernetes.Interface
+	clusterCfg     *framework.ClusterConfig
+	retain         bool
 )
 
 func TestMain(m *testing.M) {
@@ -85,6 +94,13 @@ func createKindCluster(ctx context.Context) error {
 		return fmt.Errorf("failed to create Kubernetes clientset: %w", err)
 	}
 
+	burstConfig := rest.CopyConfig(restConfig)
+	burstConfig.QPS = -1
+	burstClientset, err = kubernetes.NewForConfig(burstConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create unthrottled Kubernetes clientset: %w", err)
+	}
+
 	return nil
 }
 
@@ -122,6 +138,10 @@ func deployWebhook(ctx context.Context) error {
 
 	if err := deployer.Deploy(ctx); err != nil {
 		return fmt.Errorf("failed to deploy webhook: %w", err)
+	}
+
+	if err := framework.ConfigureWebhookDrain(ctx, testClientset, webhookTerminationGracePeriodSeconds, webhookDrainTimeout); err != nil {
+		return fmt.Errorf("failed to prepare webhook for draining: %w", err)
 	}
 
 	return nil
