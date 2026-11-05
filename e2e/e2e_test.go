@@ -17,12 +17,6 @@ import (
 	"eks-pod-identity-webhook-e2e/framework"
 )
 
-const (
-	webhookDrainTimeout = "100s" // above kube-apiserver's 90s keep-alive
-	// webhookTerminationGracePeriodSeconds covers the drain plus the webhook's 5s shutdown.
-	webhookTerminationGracePeriodSeconds = 120
-)
-
 var (
 	testClientset kubernetes.Interface
 	// burstClientset skips client-side rate limiting, as the apiserver's own webhook client does.
@@ -138,10 +132,6 @@ func deployWebhook(ctx context.Context) error {
 
 	if err := deployer.Deploy(ctx); err != nil {
 		return fmt.Errorf("failed to deploy webhook: %w", err)
-	}
-
-	if err := framework.ConfigureWebhookDrain(ctx, testClientset, webhookTerminationGracePeriodSeconds, webhookDrainTimeout); err != nil {
-		return fmt.Errorf("failed to prepare webhook for draining: %w", err)
 	}
 
 	return nil

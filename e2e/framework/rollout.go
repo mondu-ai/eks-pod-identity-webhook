@@ -12,10 +12,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-const (
-	webhookRolloutTimeout = 3 * time.Minute
-	webhookContainerName  = "webhook"
-)
+const webhookRolloutTimeout = 3 * time.Minute
 
 // RestartWebhook triggers a rolling restart of the webhook deployment, as `kubectl rollout restart` does.
 func RestartWebhook(ctx context.Context, client kubernetes.Interface) error {
@@ -60,23 +57,6 @@ func WaitForWebhookRollout(ctx context.Context, client kubernetes.Interface) err
 			return len(pods.Items) == int(replicas), nil
 		},
 	)
-}
-
-// ConfigureWebhookDrain sets the webhook's drain timeout and the grace period that covers it, as the chart
-// will once published, and waits for the webhook pods to roll over.
-func ConfigureWebhookDrain(ctx context.Context, client kubernetes.Interface, gracePeriodSeconds int64, drainTimeout string) error {
-	patch := fmt.Sprintf(
-		`{"spec":{"template":{"spec":{"terminationGracePeriodSeconds":%d,"containers":[{"name":%q,"env":[{"name":"SHUTDOWN_DRAIN_TIMEOUT","value":%q}]}]}}}}`,
-		gracePeriodSeconds, webhookContainerName, drainTimeout,
-	)
-
-	_, err := client.AppsV1().Deployments(WebhookNamespace).Patch(
-		ctx, helmDeploymentName, types.StrategicMergePatchType, []byte(patch), metav1.PatchOptions{},
-	)
-	if err != nil {
-		return fmt.Errorf("failed to configure webhook drain: %w", err)
-	}
-	return WaitForWebhookRollout(ctx, client)
 }
 
 // WebhookPods lists the webhook deployment's pods, terminating ones included.
