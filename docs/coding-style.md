@@ -1,6 +1,6 @@
 # Coding Style
 
-Codified from `.golangci.yml` (golangci-lint **v2**, pinned to `v2.12.2`) and the de-facto patterns in `main.go`. The linter is the source of truth — when in doubt, run `make lint`.
+Codified from `.golangci.yml` (golangci-lint **v2**, pinned to `v2.15.0`) and the de-facto patterns in `main.go`. The linter is the source of truth — when in doubt, run `make lint`.
 
 ## Formatting & tooling
 

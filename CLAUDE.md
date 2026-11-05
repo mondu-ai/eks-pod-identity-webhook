@@ -10,7 +10,7 @@ A Kubernetes **mutating admission webhook** that gives pods in *non-EKS* cluster
 
 ```bash
 make test           # unit tests (root module only, -race -timeout=30s)
-make lint           # installs golangci-lint v2.12.2 (pinned) and runs it
+make lint           # installs golangci-lint v2.15.0 (pinned) and runs it
 make ci             # deps fmt vet lint security test — mirrors PR CI
 make test-coverage  # writes coverage.out + coverage.html
 make security       # gosec → results.sarif (medium severity/confidence)
@@ -46,8 +46,8 @@ Config comes from flags (`-tls-cert-path`, `-tls-key-path`, `-listen-addr`, `-aw
 
 ## Two Go modules — this trips people up
 
-- **Root module** `eks-iam-pod-identity-webhook` (go 1.26) — the webhook + `main_test.go`.
-- **`e2e/` module** `eks-pod-identity-webhook-e2e` (go 1.24) — a *separate* module.
+- **Root module** `eks-iam-pod-identity-webhook` (go 1.27) — the webhook + `main_test.go`.
+- **`e2e/` module** `eks-pod-identity-webhook-e2e` (go 1.27) — a *separate* module.
 
 Consequences: `go test ./...`, `make lint`, `vet`, and `security` from the root **do not touch `e2e/`** (it's excluded in the Makefile and `.golangci.yml`). To work on e2e, `cd e2e` first. CI runs `make e2e` through the reusable `.github/workflows/e2e.yml`: on every PR after the quick checks, and on `main`/`develop`/`v*` before the image is built and pushed.
 
@@ -55,7 +55,7 @@ The e2e suite (`e2e/framework/`) creates a Kind cluster, builds the local Docker
 
 ## Conventions
 
-- Go version lives in go.mod (1.26), the Dockerfile builder (`golang:1.26-alpine`), and CI (`setup-go` → 1.26). Keep those three aligned when bumping.
+- Go version lives in `go.mod` and `e2e/go.mod` (1.27), the Dockerfile builder (`golang:1.27-alpine`), CI (`GO_VERSION` in every workflow → 1.27), and `.golangci.yml` (`run.go`). Keep them aligned when bumping.
 - `golangci-lint` v2 with strict `funlen` (100 lines / 50 statements) and `cyclop`/`gocyclo` (complexity 15). This is *why* `main.go` is decomposed into many small methods — new code must stay under those limits rather than growing a handler.
 - Runtime image is `FROM scratch`, non-root `65534`. The build is `CGO_ENABLED=0` static; a Go builder bump changes the stdlib linked into the final binary (crypto/tls, net/http), so it is not "builder-stage-only".
 

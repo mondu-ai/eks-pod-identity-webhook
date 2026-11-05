@@ -1,6 +1,6 @@
 module eks-iam-pod-identity-webhook
 
-go 1.26.0
+go 1.27.0
 
 require (
 	github.com/gin-gonic/gin v1.12.0
