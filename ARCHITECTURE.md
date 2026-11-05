@@ -69,7 +69,7 @@ The service is a single flat `package main` — there is no `internal/` or `pkg/
 Two **separate Go modules** live here:
 
 - **Root** — `eks-iam-pod-identity-webhook` (go 1.27): the webhook + `main_test.go` (unit tests, table-driven, testify).
-- **`e2e/`** — `eks-pod-identity-webhook-e2e` (go 1.27): a standalone module. `TestMain` provisions a Kind cluster, builds the local image as `eks-pod-identity-webhook:e2e-test`, and installs the webhook using the **published Helm chart** (`pullPolicy=Never`, `certManager.enabled=false`), then patches the Deployment with the chart's drain settings (`SHUTDOWN_DRAIN_TIMEOUT=100s`, `terminationGracePeriodSeconds: 120`) until the published chart sets them. It exercises the real chart contract, not local manifests. `e2e/framework/` holds the cluster/helm/cert/pod-builder helpers plus webhook restarts (`rollout.go`) and RBAC revocation (`rbac.go`). Load tests (burst, rollout) admit pods by dry-run through `burstClientset`, which has no client-side rate limit, so the load actually reaches the webhook.
+- **`e2e/`** — `eks-pod-identity-webhook-e2e` (go 1.27): a standalone module. `TestMain` provisions a Kind cluster, builds the local image as `eks-pod-identity-webhook:e2e-test`, and installs the webhook using the **published Helm chart** (`pullPolicy=Never`, `certManager.enabled=false`). It exercises the real chart contract, not local manifests. `e2e/framework/` holds the cluster/helm/cert/pod-builder helpers plus webhook restarts (`rollout.go`), RBAC revocation (`rbac.go`), and adding `UPDATE` to the webhook's rule, which the chart no longer registers, with a count of the calls kube-apiserver makes (`admission.go`). Load tests (burst, rollout) admit pods by dry-run through `burstClientset`, which has no client-side rate limit, so the load actually reaches the webhook.
 
 `go test ./...`, `make lint`, `vet`, and `security` from the root **do not touch `e2e/`** — it's a different module, explicitly excluded in the Makefile and `.golangci.yml`. CI runs it separately via the reusable `.github/workflows/e2e.yml`, on every PR and before every image push.
 
@@ -93,7 +93,7 @@ This project is a single flat package, so drift shows up in specific, greppable 
   `grep -nE 'flag\.StringVar|Getenv' main.go`
 - **Request-lifecycle chain** still reflects the real call graph — if handlers/helpers are renamed, split, or reordered, update the diagram.
 - **RBAC coupling** — if a new k8s API call is added (anything beyond the SA `Get`), note it here and confirm the chart repo's RBAC grants it.
-- **Module boundary** — if `e2e/`'s Kind/Helm flow changes (new `--set` flags, different chart source, post-install patches), update the "Code layout" and boundaries sections. Chart `--set` flags live in `e2e/framework/helm.go`; the grace-period patch in `e2e/framework/rollout.go` goes once the published chart sets it.
+- **Module boundary** — if `e2e/`'s Kind/Helm flow changes (new `--set` flags, different chart source, post-install patches), update the "Code layout" and boundaries sections. Chart `--set` flags live in `e2e/framework/helm.go`.
 - **Connection lifecycle** — `idleTimeout` stays above kube-apiserver's 90s keep-alive, and the default drain timeout plus `shutdownTimeout` fits Kubernetes' default 30s grace period, and the chart's `terminationGracePeriodSeconds` covers its own `shutdownDrainTimeout` plus 5s:
   `grep -nE 'idleTimeout|ShutdownDrain|shutdownTimeout' main.go`
 - **Go version** stays aligned across `go.mod`, the Dockerfile builder, and CI (`setup-go`).

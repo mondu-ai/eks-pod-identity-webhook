@@ -41,6 +41,8 @@ func TestStoppingReplicaWaitsForApiserverConnections(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, pods, 1, "the e2e webhook runs a single replica")
 	stopping := pods[0].Name
+	require.NotNil(t, pods[0].Spec.TerminationGracePeriodSeconds)
+	gracePeriod := time.Duration(*pods[0].Spec.TerminationGracePeriodSeconds) * time.Second
 
 	warmUp(ctx, t, ns)
 
@@ -55,7 +57,6 @@ func TestStoppingReplicaWaitsForApiserverConnections(t *testing.T) {
 	require.NotEmpty(t, pod.Status.ContainerStatuses)
 	assert.NotNil(t, pod.Status.ContainerStatuses[0].State.Running, "the replica should still serve while draining")
 
-	gracePeriod := time.Duration(webhookTerminationGracePeriodSeconds) * time.Second
 	err = wait.PollUntilContextTimeout(ctx, time.Second, gracePeriod, true, func(ctx context.Context) (bool, error) {
 		return gone(ctx, stopping), nil
 	})
